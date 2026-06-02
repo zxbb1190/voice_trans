@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -110,6 +111,30 @@ class GameTranslator:
         host = (urlparse(self._normalized_endpoint()).hostname or "").lower()
         return host not in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
+    def _short_error_text(self, error_text: str) -> str:
+        text = (error_text or "").strip()
+        if not text:
+            return ""
+        try:
+            data = json.loads(text)
+            error = data.get("error") if isinstance(data, dict) else None
+            if isinstance(error, dict):
+                parts = [
+                    str(error.get("code") or "").strip(),
+                    str(error.get("message") or "").strip(),
+                ]
+                text = " ".join(part for part in parts if part)
+            elif isinstance(data, dict):
+                parts = [
+                    str(data.get("code") or "").strip(),
+                    str(data.get("message") or data.get("detail") or "").strip(),
+                ]
+                text = " ".join(part for part in parts if part)
+        except Exception:
+            pass
+        text = " ".join(text.split())
+        return text[:220]
+
     async def translate(self, text: str, detected_language: str = "") -> str:
         """在中文和英文之间互译"""
         if not text or not text.strip():
@@ -117,7 +142,7 @@ class GameTranslator:
 
         if self._is_placeholder_api_key() and self._requires_api_key():
             logger.warning("API Key 未配置，返回原文")
-            return f"[未翻译] {text}"
+            return "[未翻译] API Key 未配置，请在设置里填写 OpenAI 兼容 API Key"
 
         source_language = self.detect_language(text, detected_language)
         target_language = self.get_target_language(source_language)
@@ -193,14 +218,17 @@ class GameTranslator:
                 else:
                     error_text = await response.text()
                     logger.error(f"翻译 API 错误: {response.status} - {error_text}")
-                    return f"[翻译错误: {response.status}]"
+                    detail = self._short_error_text(error_text)
+                    if detail:
+                        return f"[翻译错误 {response.status}] {detail}"
+                    return f"[翻译错误 {response.status}] API 服务商返回错误"
 
         except asyncio.TimeoutError:
             logger.error("翻译 API 超时")
-            return f"[翻译超时] {text[:80]}..."
+            return f"[翻译超时] API 请求超过 {self.config.timeout_seconds:g} 秒，请检查网络或服务商状态"
         except Exception as e:
             logger.error(f"翻译异常: {e}")
-            return f"[翻译失败] {text[:80]}..."
+            return f"[翻译失败] {str(e)[:180]}"
 
     async def translate_batch(self, texts: List[str]) -> List[str]:
         """批量翻译"""

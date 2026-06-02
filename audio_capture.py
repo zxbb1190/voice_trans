@@ -80,6 +80,7 @@ class SystemAudioCapture:
         self._speech_buffer = []
         self._stream_channels = max(1, self.config.channels)
         self._capture_sample_rate = self.config.sample_rate
+        self.selected_device = None
         self._silence_counter = 0
         self._speech_threshold = self.config.speech_threshold_blocks
         self._silence_limit = self.config.silence_limit_blocks
@@ -225,6 +226,14 @@ class SystemAudioCapture:
                     self._stream_channels = channels
                     self._capture_sample_rate = sample_rate
                     device_type = "系统声音" if info.get("isLoopbackDevice") else "输入设备"
+                    self.selected_device = {
+                        "index": idx,
+                        "name": info.get("name", ""),
+                        "type": device_type,
+                        "sample_rate": sample_rate,
+                        "channels": channels,
+                        "is_loopback": bool(info.get("isLoopbackDevice")),
+                    }
                     logger.info(
                         "选中{} [{}]: {} ({}Hz/{}ch)",
                         device_type,

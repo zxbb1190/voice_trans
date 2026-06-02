@@ -1,12 +1,16 @@
-# 游戏语音实时翻译器 - README
+# 游戏语音实时翻译器
+
+English documentation: [README_EN.md](README_EN.md)
 
 ## 🎮 功能特性
 - **实时音频捕获**: 使用 WASAPI Loopback 捕获系统音频输出（不是麦克风）
-- **本地语音识别**: 基于 faster-whisper 的离线英文转文字
-- **智能翻译**: OpenAI 兼容 Chat Completions API，默认使用硅基流动，可接入 DeepSeek、Qwen、GLM、本地模型等
+- **本地语音识别**: 基于 faster-whisper 的离线语音转文字，支持自动识别中文/英文
+- **智能双向翻译**: 自动判断原文语言，英文自动翻译为中文，中文自动翻译为英文
+- **兼容多种模型服务**: OpenAI 兼容 Chat Completions API，默认使用硅基流动，可接入 DeepSeek、Qwen、GLM、本地模型等
 - **游戏浮窗**: 透明置顶窗口，在游戏内显示翻译结果
+- **可见状态提示**: 启动状态、音频设备、暂停/恢复、翻译 API 错误码等会直接显示在浮窗里
 - **手机端同步**: WebSocket 实时推送到手机浏览器
-- **全局热键**: Ctrl+Shift+T/C/P 快速控制
+- **全局热键**: Ctrl+Shift+T、Ctrl+Alt+C、Ctrl+Alt+S 快速控制
 
 ## 📁 项目结构
 ```
@@ -22,6 +26,7 @@ game_voice_translator/
 ├── requirements.txt     # Python 依赖
 ├── install.bat          # 安装脚本
 ├── run.bat              # 启动脚本
+├── README_EN.md         # English documentation
 └── README.md
 ```
 
@@ -95,6 +100,20 @@ python main.py
 - **Ctrl+Alt+S**: 暂停/恢复翻译
 - **拖拽浮窗**: 可移动位置
 - **右上角齿轮**: 配置 API Key、模型名、兼容地址、音频设备、透明度和热键
+
+### 翻译方向
+程序会自动识别语音识别结果是中文还是英文：
+- 识别到英文时，自动翻译成中文
+- 识别到中文时，自动翻译成英文
+- 中英文混杂内容会按主要语言判断，并尽量保留游戏术语、缩写、人名和地名
+
+### 状态与错误提示
+除了正常翻译结果，浮窗也会显示必要的用户提示，例如：
+- 启动进度、Whisper 模型加载状态
+- 当前选中的系统声音 / Loopback 音频设备
+- 音频捕获启动失败或设备枚举失败
+- 翻译暂停 / 恢复、清空历史、热键触发
+- 翻译 API 超时、服务商 HTTP 状态码和错误信息
 
 ### 手机端访问
 1. 确保电脑和手机在同一局域网

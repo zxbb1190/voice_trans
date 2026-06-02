@@ -80,6 +80,16 @@ class GameVoiceTranslator:
         self._stopping = False
         self._processing_lock = threading.Lock()
         self._hotkey_handles = []
+        self._pending_notices = []
+        self._last_audio_device = (
+            self.config.audio.input_device_index,
+            self.config.audio.input_device_name,
+        )
+        self._last_translation_settings = (
+            self.config.translation.api_key,
+            self.config.translation.model,
+            self.config.translation.endpoint,
+        )
         self._stats = {
             "audio_chunks": 0, "speech_detected": 0,
             "transcriptions": 0, "translations": 0, "errors": 0
@@ -194,6 +204,35 @@ class GameVoiceTranslator:
         except Exception:
             pass
 
+    def _notify_user(self, title: str, message: str, level: str = "状态"):
+        title = (title or "").strip()
+        message = (message or "").strip()
+        if not title and not message:
+            return
+        original = f"[{level}] {title}" if title else f"[{level}]"
+        if self._overlay:
+            self._overlay.add_translation(original, message)
+        else:
+            self._pending_notices.append((original, message))
+
+    def _flush_pending_notices(self):
+        if not self._overlay:
+            return
+        for original, message in self._pending_notices:
+            self._overlay.add_translation(original, message)
+        self._pending_notices.clear()
+
+    def _describe_selected_audio_device(self) -> str:
+        if not self._audio_capture or not self._audio_capture.selected_device:
+            if self.config.audio.input_device_index is not None:
+                return f"[{self.config.audio.input_device_index}] {self.config.audio.input_device_name}"
+            return "自动选择"
+        device = self._audio_capture.selected_device
+        return (
+            f"{device['type']} [{device['index']}]: {device['name']} "
+            f"({device['sample_rate']}Hz/{device['channels']}ch)"
+        )
+
     def _on_speech_detected(self, audio_data: bytes):
         if self._paused or not self._running:
             return
@@ -228,9 +267,18 @@ class GameVoiceTranslator:
                 translated = f"[翻译为空] {text}"
                 logger.warning("翻译返回空结果，显示识别文本")
             if translated:
-                self._stats["translations"] += 1
                 logger.info(f"[翻译] {translated[:80]} ({time.time()-t0:.1f}s)")
-                if self._overlay:
+                is_notice = translated.startswith("[翻译") or translated.startswith("[未翻译]")
+                if is_notice:
+                    if translated.startswith("[翻译"):
+                        self._stats["errors"] += 1
+                    self._notify_user(
+                        "翻译服务异常",
+                        translated,
+                        "错误" if translated.startswith("[翻译") else "提示",
+                    )
+                elif self._overlay:
+                    self._stats["translations"] += 1
                     logger.info("推送翻译到浮窗")
                     self._overlay.add_translation(text, translated)
                 if self._mobile_server:
@@ -238,6 +286,7 @@ class GameVoiceTranslator:
         except Exception as e:
             self._stats["errors"] += 1
             logger.exception(f"处理失败: {e}")
+            self._notify_user("处理失败", str(e), "错误")
 
     def _setup_hotkeys(self):
         try:
@@ -256,6 +305,7 @@ class GameVoiceTranslator:
             )
         except Exception as e:
             logger.exception(f"热键注册失败: {e}")
+            self._notify_user("热键注册失败", str(e), "错误")
 
     def _remove_hotkeys(self):
         for handle in self._hotkey_handles:
@@ -269,15 +319,18 @@ class GameVoiceTranslator:
         if self._overlay:
             logger.info("触发热键: 切换浮窗")
             self._overlay._signals.toggle_visibility.emit()
+            self._notify_user("热键", f"已触发: {self.config.hotkeys.toggle_overlay}", "状态")
 
     def _clear_history(self):
         if self._overlay:
             logger.info("触发热键: 清空历史")
             self._overlay._signals.clear_history.emit()
+            self._notify_user("翻译历史", "已清空", "状态")
 
     def _toggle_translation(self):
         self._paused = not self._paused
         logger.info(f"翻译{'暂停' if self._paused else '恢复'}")
+        self._notify_user("翻译状态", "翻译暂停" if self._paused else "翻译恢复", "状态")
 
     def _start_qt(self):
         from PyQt5.QtWidgets import QApplication
@@ -296,6 +349,7 @@ class GameVoiceTranslator:
             self._list_audio_devices,
         )
         self._overlay.show()
+        self._flush_pending_notices()
         logger.info("浮窗已启动")
 
     def _apply_overlay_settings(
@@ -305,10 +359,8 @@ class GameVoiceTranslator:
         audio_config: AudioConfig,
         translation_config: TranslationConfig,
     ):
-        previous_device = (
-            self.config.audio.input_device_index,
-            self.config.audio.input_device_name,
-        )
+        previous_device = self._last_audio_device
+        previous_translation = self._last_translation_settings
         self.config.overlay = overlay_config
         self.config.hotkeys = hotkey_config
         self.config.translation = translation_config
@@ -322,8 +374,21 @@ class GameVoiceTranslator:
             self.config.audio.input_device_index,
             self.config.audio.input_device_name,
         )
+        current_translation = (
+            self.config.translation.api_key,
+            self.config.translation.model,
+            self.config.translation.endpoint,
+        )
         if self._running and current_device != previous_device:
             self._restart_audio_capture()
+        if current_translation != previous_translation:
+            self._notify_user(
+                "翻译接口已更新",
+                f"模型: {self.config.translation.model}\n兼容地址: {self.config.translation.endpoint}",
+                "状态",
+            )
+        self._last_audio_device = current_device
+        self._last_translation_settings = current_translation
         logger.info(
             "浮窗设置已应用: opacity={:.2f}, text_color={}, show_original={}, audio_device={} {}, model={}, endpoint={}, hotkeys={}/{}/{}",
             overlay_config.opacity,
@@ -360,24 +425,22 @@ class GameVoiceTranslator:
             time.sleep(0.01)
         logger.info("翻译事件循环已启动")
 
-    def _start_audio_capture(self):
+    def _start_audio_capture(self, notice_title: str = "音频捕获已启动"):
         if self._audio_capture:
             self._audio_capture.stop()
             self._audio_capture = None
         self._audio_capture = SystemAudioCapture(self.config.audio)
         self._audio_capture.set_speech_callback(self._on_speech_detected)
         self._audio_capture.start()
+        self._notify_user(
+            notice_title,
+            f"{self._describe_selected_audio_device()} -> mono",
+            "状态",
+        )
 
     def _restart_audio_capture(self):
         try:
-            self._start_audio_capture()
-            if self._overlay:
-                self._overlay.add_translation(
-                    "音频设备已切换",
-                    f"当前设备: [{self.config.audio.input_device_index}] {self.config.audio.input_device_name}"
-                    if self.config.audio.input_device_index is not None
-                    else "当前设备: 自动选择"
-                )
+            self._start_audio_capture("音频设备已切换")
         except Exception as e:
             self._stats["errors"] += 1
             self._show_audio_startup_warning(e)
@@ -388,6 +451,7 @@ class GameVoiceTranslator:
         except Exception as e:
             self._write_crash_report("音频设备枚举失败", e)
             logger.warning("音频设备枚举失败: {}", e)
+            self._notify_user("音频设备枚举失败", str(e), "错误")
             return []
 
     def _show_audio_startup_warning(self, exc: Exception):
@@ -399,8 +463,7 @@ class GameVoiceTranslator:
         )
         self._write_crash_report("音频采集启动失败", exc, detail)
         logger.exception(detail)
-        if self._overlay:
-            self._overlay.add_translation("音频采集未启动", detail)
+        self._notify_user("音频采集未启动", detail, "错误")
 
     def _translate_text(self, text: str, detected_language: str = "") -> str:
         if self._translation_loop and self._translation_loop.is_running():
@@ -454,10 +517,12 @@ class GameVoiceTranslator:
 
     def start(self):
         logger.info("正在启动...")
+        self._notify_user("正在启动", "正在加载语音识别、翻译服务和浮窗", "状态")
         try:
             self._speech_recognizer = SpeechRecognizer(self.config.whisper)
             self._translator = GameTranslator(self.config.translation)
             self._start_translation_loop()
+            self._notify_user("语音识别模型", "正在加载 Whisper 模型，首次运行可能需要等待", "状态")
             self._speech_recognizer.initialize()
 
             self._start_mobile()
@@ -468,6 +533,11 @@ class GameVoiceTranslator:
 
             self._running = True
             self._print_banner()
+            self._notify_user(
+                "程序已启动",
+                f"自动识别中文/英文，支持英译中和中译英\n手机端: {self._mobile_server.get_mobile_url()}",
+                "状态",
+            )
 
             try:
                 self._start_audio_capture()
@@ -487,6 +557,7 @@ class GameVoiceTranslator:
         except Exception as e:
             self._write_crash_report("启动失败", e)
             logger.exception(f"启动失败: {e}")
+            self._notify_user("启动失败", str(e), "错误")
             self._show_error_dialog(
                 "Game Voice Translator 启动失败",
                 f"程序启动失败，已在程序目录生成 crash_report.txt。\n\n{e}",
