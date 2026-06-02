@@ -5,9 +5,15 @@ from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
 root = Path.cwd()
+safe_config = root / "build" / "packaged_config" / "config.json"
+safe_config.parent.mkdir(parents=True, exist_ok=True)
+safe_config.write_text(
+    (root / "config.example.json").read_text(encoding="utf-8"),
+    encoding="utf-8",
+)
 
 datas = [
-    (str(root / "config.json"), "."),
+    (str(safe_config), "."),
     (str(root / ".models"), ".models"),
     (str(root / ".venv-win" / "Lib" / "site-packages" / "faster_whisper" / "assets"), "faster_whisper/assets"),
 ]

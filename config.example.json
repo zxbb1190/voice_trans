@@ -7,7 +7,8 @@
     "silence_threshold": -3,
     "speech_threshold_blocks": 2,
     "silence_limit_blocks": 4,
-    "max_buffer_blocks": 120
+    "max_buffer_blocks": 120,
+    "max_speech_seconds": 8
   },
   "whisper": {
     "model_size": "base",

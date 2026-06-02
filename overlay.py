@@ -18,7 +18,8 @@ from PyQt5.QtGui import (
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout,
     QApplication, QPushButton, QFrame, QDialog, QFormLayout,
-    QSlider, QCheckBox, QLineEdit, QColorDialog, QToolButton, QComboBox
+    QSlider, QCheckBox, QLineEdit, QColorDialog, QToolButton, QComboBox,
+    QSpinBox
 )
 
 from qr_widget import QrCodeWidget
@@ -54,6 +55,7 @@ class HotkeyConfig:
 class AudioDeviceConfig:
     input_device_index: Optional[int] = None
     input_device_name: str = ""
+    max_speech_seconds: float = 8.0
 
 
 class TranslationItem:
@@ -312,6 +314,16 @@ class SettingsDialog(QDialog):
         self.refresh_audio_button.clicked.connect(self._request_audio_refresh)
         form.addRow("音频设备", audio_row)
 
+        self.max_speech_seconds_spin = QSpinBox()
+        self.max_speech_seconds_spin.setRange(3, 30)
+        self.max_speech_seconds_spin.setSuffix(" 秒")
+        self.max_speech_seconds_spin.setValue(
+            int(round(float(getattr(self.audio_config, "max_speech_seconds", 8) or 8)))
+        )
+        self.max_speech_seconds_spin.setToolTip("连续有声超过这个时长会强制切成一段，推荐 6-10 秒")
+        self.max_speech_seconds_spin.valueChanged.connect(self._preview)
+        form.addRow("最长捕获", self.max_speech_seconds_spin)
+
         self.toggle_overlay_input = HotkeyCaptureEdit(self.hotkey_config.toggle_overlay)
         self.toggle_translation_input = HotkeyCaptureEdit(self.hotkey_config.toggle_translation)
         self.clear_history_input = HotkeyCaptureEdit(self.hotkey_config.clear_history)
@@ -360,6 +372,12 @@ class SettingsDialog(QDialog):
         self.audio_devices = audio_devices or []
         self.audio_config = audio_config
         self._fill_audio_devices()
+        if hasattr(self, "max_speech_seconds_spin"):
+            self.max_speech_seconds_spin.blockSignals(True)
+            self.max_speech_seconds_spin.setValue(
+                int(round(float(getattr(self.audio_config, "max_speech_seconds", 8) or 8)))
+            )
+            self.max_speech_seconds_spin.blockSignals(False)
 
     def _request_audio_refresh(self):
         parent = self.parent()
@@ -397,6 +415,7 @@ class SettingsDialog(QDialog):
         else:
             self.audio_config.input_device_index = None
             self.audio_config.input_device_name = ""
+        self.audio_config.max_speech_seconds = float(self.max_speech_seconds_spin.value())
 
 
 class GameOverlay(QWidget):

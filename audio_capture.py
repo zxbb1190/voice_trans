@@ -27,6 +27,7 @@ class AudioConfig:
     speech_threshold_blocks: int = 8
     silence_limit_blocks: int = 20
     max_buffer_blocks: int = 500
+    max_speech_seconds: float = 8.0
     input_device_index: Optional[int] = None
     input_device_name: str = ""
     format: int = pyaudio.paInt16
@@ -78,6 +79,7 @@ class SystemAudioCapture:
         self._audio_queue = queue.Queue()
         self._on_speech_callback: Optional[Callable] = None
         self._speech_buffer = []
+        self._speech_buffer_samples = 0
         self._stream_channels = max(1, self.config.channels)
         self._capture_sample_rate = self.config.sample_rate
         self.selected_device = None
@@ -86,6 +88,7 @@ class SystemAudioCapture:
         self._silence_limit = self.config.silence_limit_blocks
         self._energy_threshold = self.config.silence_threshold
         self._max_buffer_blocks = self.config.max_buffer_blocks
+        self._max_speech_seconds = float(self.config.max_speech_seconds or 0)
 
     def find_loopback_device(self) -> Optional[int]:
         """Find the configured or most likely system-audio input device."""
@@ -340,40 +343,65 @@ class SystemAudioCapture:
 
         if is_speech:
             self._speech_buffer.append(audio_data)
+            self._speech_buffer_samples += len(audio_np)
             self._silence_counter = 0
-            logger.debug(f'语音缓冲区: {len(self._speech_buffer)} 块')
-            # 防止缓冲区无限增长
-            if len(self._speech_buffer) > self._max_buffer_blocks:
-                logger.warning('缓冲区超过上限，强制切分语音片段')
-                speech_data = b"".join(self._speech_buffer)
-                self._speech_buffer.clear()
-                self._silence_counter = 0
-                if self._on_speech_callback:
-                    self._on_speech_callback(speech_data)
-                return speech_data
+            logger.debug(
+                '语音缓冲区: {} 块, {:.1f}s',
+                len(self._speech_buffer),
+                self._buffer_duration_seconds(),
+            )
+            should_split, reason = self._should_force_split()
+            if should_split:
+                logger.warning('连续有声，强制切分语音片段: {}', reason)
+                return self._emit_speech_buffer(reason)
         elif self._speech_buffer:
             self._silence_counter += 1
             logger.debug(f'静音计数: {self._silence_counter}/{self._silence_limit}')
             if (self._silence_counter >= self._silence_limit
                     and len(self._speech_buffer) < self._speech_threshold):
                 logger.debug(f'丢弃过短片段: {len(self._speech_buffer)} 块')
-                self._speech_buffer.clear()
-                self._silence_counter = 0
+                self._reset_speech_buffer()
 
         # 检测语音片段结束
         if (self._silence_counter >= self._silence_limit
                 and len(self._speech_buffer) >= self._speech_threshold):
-            speech_data = b"".join(self._speech_buffer)
-            logger.info(f'检测到语音片段: {len(speech_data)} 字节, {len(self._speech_buffer)} 块')
-            self._speech_buffer.clear()
-            self._silence_counter = 0
-
-            if self._on_speech_callback:
-                self._on_speech_callback(speech_data)
-
-            return speech_data
+            return self._emit_speech_buffer("静音结束")
 
         return None
+
+    def _buffer_duration_seconds(self) -> float:
+        sample_rate = max(1, int(self.config.sample_rate or self._capture_sample_rate or 16000))
+        return self._speech_buffer_samples / sample_rate
+
+    def _should_force_split(self):
+        if self._max_speech_seconds > 0 and self._buffer_duration_seconds() >= self._max_speech_seconds:
+            return True, f"达到最长 {self._max_speech_seconds:g}s"
+        if self._max_buffer_blocks > 0 and len(self._speech_buffer) >= self._max_buffer_blocks:
+            return True, f"达到块数上限 {self._max_buffer_blocks}"
+        return False, ""
+
+    def _reset_speech_buffer(self):
+        self._speech_buffer.clear()
+        self._speech_buffer_samples = 0
+        self._silence_counter = 0
+
+    def _emit_speech_buffer(self, reason: str) -> Optional[bytes]:
+        speech_data = b"".join(self._speech_buffer)
+        duration = self._buffer_duration_seconds()
+        block_count = len(self._speech_buffer)
+        logger.info(
+            '检测到语音片段: {} 字节, {:.1f}s, {} 块 ({})',
+            len(speech_data),
+            duration,
+            block_count,
+            reason,
+        )
+        self._reset_speech_buffer()
+
+        if self._on_speech_callback:
+            self._on_speech_callback(speech_data)
+
+        return speech_data
 
     def save_audio(self, data: bytes, filepath: str):
         """保存音频到文件"""

@@ -126,6 +126,7 @@ Edit `config.json` or use the overlay settings:
 | `whisper.model_size` | Whisper model size: tiny/base/small/medium |
 | `overlay.text_color` | Overlay text color |
 | `audio.sample_rate` | Audio sample rate |
+| `audio.max_speech_seconds` | Maximum seconds before forced splitting during continuous sound, recommended 6-10 |
 | `translation.api_key` | OpenAI-compatible API Key |
 | `translation.model` | Model name, default `Qwen/Qwen2.5-7B-Instruct` |
 | `translation.endpoint` | Compatible endpoint or `/v1` base URL |

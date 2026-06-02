@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import inspect
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,10 @@ from typing import Optional
 
 import numpy as np
 from faster_whisper import WhisperModel
+try:
+    from faster_whisper.vad import VadOptions
+except Exception:
+    VadOptions = None
 from loguru import logger
 
 
@@ -45,6 +50,9 @@ class SpeechRecognizer:
 
     def __init__(self, config: WhisperConfig = None):
         self.config = config or WhisperConfig()
+        if self.config.vad_parameters is None:
+            self.config.vad_parameters = DEFAULT_VAD_PARAMS.copy()
+        self.config.vad_parameters = sanitize_vad_parameters(self.config.vad_parameters)
         self._model: Optional[WhisperModel] = None
         self._initialized = False
         self._model_dir = Path(self.config.model_dir)
@@ -206,8 +214,27 @@ class SpeechRecognizer:
 DEFAULT_VAD_PARAMS = {
     "threshold": 0.5,
     "min_speech_duration_ms": 250,
-    "max_speech_duration_s": float("inf"),
+    "max_speech_duration_s": 8,
     "min_silence_duration_ms": 2000,
-    "window_size_samples": 1024,
     "speech_pad_ms": 400
 }
+
+
+def sanitize_vad_parameters(vad_parameters: Optional[dict]) -> Optional[dict]:
+    if not vad_parameters:
+        return vad_parameters
+    if VadOptions is None:
+        return dict(vad_parameters)
+    try:
+        supported_keys = set(inspect.signature(VadOptions).parameters)
+    except Exception:
+        return dict(vad_parameters)
+    cleaned = {
+        key: value
+        for key, value in dict(vad_parameters).items()
+        if key in supported_keys
+    }
+    removed = sorted(set(vad_parameters) - set(cleaned))
+    if removed:
+        logger.debug("忽略当前 faster-whisper 不支持的 VAD 参数: {}", ", ".join(removed))
+    return cleaned

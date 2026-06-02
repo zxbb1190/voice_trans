@@ -129,6 +129,7 @@ python main.py
 | `overlay.position` | 浮窗位置: top/bottom/left/right |
 | `overlay.text_color` | 文字颜色 (十六进制) |
 | `audio.sample_rate` | 采样率 (推荐 16000) |
+| `audio.max_speech_seconds` | 连续有声时强制切段的最长秒数，推荐 6~10 秒 |
 | `translation.api_key` | OpenAI 兼容 API Key |
 | `translation.model` | 模型名，默认 `Qwen/Qwen2.5-7B-Instruct` |
 | `translation.endpoint` | OpenAI 兼容地址，可填 `/v1` base_url 或完整 `/chat/completions` |
