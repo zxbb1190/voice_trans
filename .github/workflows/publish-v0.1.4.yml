@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   publish:
-    if: github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'ci: publish v0.1.4 release'
+    if: "${{ github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'ci: publish v0.1.4 release' }}"
     runs-on: windows-latest
 
     steps:
