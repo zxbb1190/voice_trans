@@ -5,9 +5,10 @@ Compare SiliconFlow model latency for short translation prompts.
 import asyncio
 import json
 import time
-from pathlib import Path
 
 import aiohttp
+
+from _helpers import load_translation_config, normalized_chat_endpoint, require_real_api_key
 
 
 CANDIDATES = [
@@ -54,15 +55,19 @@ async def try_model(session, endpoint, api_key, model, text):
 
 
 async def main():
-    config = json.loads(Path("config.json").read_text(encoding="utf-8"))
-    translation = config["translation"]
+    config = load_translation_config()
+    if config.provider != "openai_compatible":
+        raise SystemExit("Set translation.provider to openai_compatible in config.json first.")
+    require_real_api_key(config.api_key, "SiliconFlow/OpenAI-compatible")
+
+    endpoint = normalized_chat_endpoint(config.endpoint)
     timeout = aiohttp.ClientTimeout(total=10)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         for model in CANDIDATES:
             await try_model(
                 session,
-                translation["endpoint"],
-                translation["api_key"],
+                endpoint,
+                config.api_key,
                 model,
                 "我都搞不懂为什么要玩部落。",
             )

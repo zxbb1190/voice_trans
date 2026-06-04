@@ -22,6 +22,8 @@
     "model_size": "small",
     "device": "cpu",
     "compute_type": "auto",
+    "model_download_source": "modelscope",
+    "model_download_endpoint": "",
     "language": "en",
     "beam_size": 5,
     "vad_filter": false,

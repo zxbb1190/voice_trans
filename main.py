@@ -21,9 +21,14 @@ from loguru import logger
 
 from audio_capture import SystemAudioCapture, AudioConfig, list_input_devices
 from speech_recognition import (
+    MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT,
+    ModelDownloadProgress,
     SpeechRecognizer,
     WhisperConfig,
     DEFAULT_VAD_PARAMS,
+    describe_model_download_source,
+    normalize_model_download_endpoint,
+    normalize_model_download_source,
     is_likely_asr_hallucination,
     sanitize_vad_parameters,
 )
@@ -161,6 +166,18 @@ class GameVoiceTranslator:
             self.config.translation.target_lang,
         )
         self._last_whisper_device = _normalize_whisper_device(self.config.whisper.device)
+        self._last_model_download_source = (
+            normalize_model_download_source(
+                getattr(self.config.whisper, "model_download_source", "modelscope"),
+                getattr(self.config.whisper, "model_download_endpoint", ""),
+            ),
+            normalize_model_download_endpoint(
+                getattr(self.config.whisper, "model_download_endpoint", "")
+            ),
+        )
+        self._model_download_notice_started = False
+        self._last_model_download_update = 0.0
+        self._last_model_download_bytes = (0, 0, 0.0)
         self._stats = {
             "audio_chunks": 0, "speech_detected": 0,
             "transcriptions": 0, "translations": 0, "errors": 0,
@@ -183,6 +200,7 @@ class GameVoiceTranslator:
                         for k, v in data[section].items():
                             if hasattr(target, k):
                                 setattr(target, k, v)
+                self._migrate_legacy_model_download_settings(default_config, data.get("whisper", {}))
                 logger.info(f"已加载配置: {config_path}")
             except Exception as e:
                 logger.error(f"配置加载失败: {e}")
@@ -204,9 +222,17 @@ class GameVoiceTranslator:
                     for key, value in data[section].items():
                         if hasattr(target, key):
                             setattr(target, key, value)
+            self._migrate_legacy_model_download_settings(config, data.get("whisper", {}))
             logger.info("已加载用户设置: {}", settings_path)
         except Exception as e:
             logger.warning("用户设置加载失败: {}", e)
+
+    def _migrate_legacy_model_download_settings(self, config: AppConfig, whisper_data: dict):
+        if not whisper_data:
+            return
+        endpoint = normalize_model_download_endpoint(whisper_data.get("model_download_endpoint", ""))
+        if endpoint and "model_download_source" not in whisper_data:
+            config.whisper.model_download_source = MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT
 
     def _save_user_settings(self):
         settings_path = self._runtime_dir() / "user_settings.json"
@@ -237,6 +263,13 @@ class GameVoiceTranslator:
             },
             "whisper": {
                 "device": _normalize_whisper_device(self.config.whisper.device),
+                "model_download_source": normalize_model_download_source(
+                    getattr(self.config.whisper, "model_download_source", "modelscope"),
+                    getattr(self.config.whisper, "model_download_endpoint", ""),
+                ),
+                "model_download_endpoint": normalize_model_download_endpoint(
+                    getattr(self.config.whisper, "model_download_endpoint", "")
+                ),
             },
             "translation": {
                 "provider": normalize_translation_provider(self.config.translation.provider),
@@ -326,6 +359,82 @@ class GameVoiceTranslator:
             self._overlay.add_translation(original, message)
         else:
             self._pending_notices.append((original, message))
+
+    def _notify_model_download_progress(self, progress: ModelDownloadProgress):
+        if progress.downloaded_bytes or progress.total_bytes:
+            self._last_model_download_bytes = (
+                progress.downloaded_bytes,
+                progress.total_bytes,
+                progress.percent,
+            )
+
+        now = time.time()
+        if progress.status == "downloading" and now - self._last_model_download_update < 0.5:
+            return
+        self._last_model_download_update = now
+
+        message = self._format_model_download_progress(progress)
+        item_id = "model-download-progress"
+        original = "[状态] 模型下载"
+        if self._overlay:
+            if self._model_download_notice_started:
+                self._overlay.update_translation(item_id, message)
+            else:
+                self._overlay.add_translation_with_id(item_id, original, message)
+                self._model_download_notice_started = True
+        else:
+            self._pending_notices.append((original, message))
+
+    def _format_model_download_progress(self, progress: ModelDownloadProgress) -> str:
+        model = progress.model_name or self.config.whisper.model_size
+        repo = progress.repo_id or model
+        source = progress.source or describe_model_download_source(
+            getattr(self.config.whisper, "model_download_source", "modelscope"),
+            getattr(self.config.whisper, "model_download_endpoint", "")
+        )
+        header = f"模型: {model}\n仓库: {repo}\n来源: {source}"
+
+        if progress.status == "checking":
+            return f"{header}\n正在检查本地缓存"
+        if progress.status == "complete":
+            detail = progress.message or "模型缓存已就绪"
+            downloaded, total, percent = self._last_model_download_bytes
+            progress_line = self._format_download_amount(downloaded, total, percent)
+            if progress_line:
+                return f"{header}\n已下载: {progress_line}\n{detail}，正在加载识别引擎"
+            return f"{header}\n{detail}，正在加载识别引擎"
+        if progress.status == "error":
+            downloaded, total, percent = self._last_model_download_bytes
+            progress_line = self._format_download_amount(downloaded, total, percent)
+            suffix = f"\n已下载: {progress_line}" if progress_line else ""
+            return f"{progress.message or '模型下载失败'}{suffix}"
+
+        progress_line = self._format_download_amount(
+            progress.downloaded_bytes,
+            progress.total_bytes,
+            progress.percent,
+        )
+        if not progress_line:
+            progress_line = "正在准备下载"
+        return f"{header}\n已下载: {progress_line}"
+
+    def _format_download_amount(self, downloaded: int, total: int, percent: float) -> str:
+        if total:
+            return f"{self._format_bytes(downloaded)} / {self._format_bytes(total)} ({percent:.1f}%)"
+        if downloaded:
+            return self._format_bytes(downloaded)
+        return ""
+
+    @staticmethod
+    def _format_bytes(value: int) -> str:
+        size = float(max(0, int(value or 0)))
+        for unit in ("B", "KB", "MB", "GB"):
+            if size < 1024 or unit == "GB":
+                if unit == "B":
+                    return f"{int(size)} B"
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} GB"
 
     def _flush_pending_notices(self):
         if not self._overlay:
@@ -543,12 +652,20 @@ class GameVoiceTranslator:
         previous_device = self._last_audio_device
         previous_translation = self._last_translation_settings
         previous_whisper_device = self._last_whisper_device
+        previous_model_download_source = self._last_model_download_source
         self.config.overlay = overlay_config
         self.config.hotkeys = hotkey_config
         self.config.translation = translation_config
         self.config.translation.provider = normalize_translation_provider(self.config.translation.provider)
         self.config.whisper.device = _normalize_whisper_device(
             getattr(whisper_config, "device", self.config.whisper.device)
+        )
+        self.config.whisper.model_download_source = normalize_model_download_source(
+            getattr(whisper_config, "model_download_source", getattr(self.config.whisper, "model_download_source", "modelscope")),
+            getattr(whisper_config, "model_download_endpoint", getattr(self.config.whisper, "model_download_endpoint", "")),
+        )
+        self.config.whisper.model_download_endpoint = normalize_model_download_endpoint(
+            getattr(whisper_config, "model_download_endpoint", getattr(self.config.whisper, "model_download_endpoint", ""))
         )
         self.config.audio.input_device_id = getattr(audio_config, "input_device_id", "")
         self.config.audio.input_device_index = audio_config.input_device_index
@@ -574,6 +691,15 @@ class GameVoiceTranslator:
             self.config.translation.endpoint,
         )
         current_whisper_device = _normalize_whisper_device(self.config.whisper.device)
+        current_model_download_source = (
+            normalize_model_download_source(
+                getattr(self.config.whisper, "model_download_source", "modelscope"),
+                getattr(self.config.whisper, "model_download_endpoint", ""),
+            ),
+            normalize_model_download_endpoint(
+                getattr(self.config.whisper, "model_download_endpoint", "")
+            ),
+        )
         if self._running and current_device != previous_device:
             self._restart_audio_capture()
         if current_language_flow != previous_language_flow:
@@ -605,12 +731,19 @@ class GameVoiceTranslator:
                 f"当前选择: {WHISPER_DEVICE_NAMES[current_whisper_device]}\n重启程序后生效",
                 "状态",
             )
+        if current_model_download_source != previous_model_download_source:
+            self._notify_user(
+                "模型下载源已更新",
+                f"当前选择: {describe_model_download_source(*current_model_download_source)}\n重启程序后生效",
+                "状态",
+            )
         self._last_audio_device = current_device
         self._last_translation_settings = current_translation
         self._last_language_flow = current_language_flow
         self._last_whisper_device = current_whisper_device
+        self._last_model_download_source = current_model_download_source
         logger.info(
-            "浮窗设置已应用: opacity={:.2f}, bg_opacity={:.2f}, text_color={}, show_original={}, audio_device={} {}, max_speech={}s, language={}→{}, whisper_device={}, provider={}, model={}, endpoint={}, hotkeys={}/{}/{}",
+            "浮窗设置已应用: opacity={:.2f}, bg_opacity={:.2f}, text_color={}, show_original={}, audio_device={} {}, max_speech={}s, language={}→{}, whisper_device={}, model_download_source={}, provider={}, model={}, endpoint={}, hotkeys={}/{}/{}",
             overlay_config.opacity,
             overlay_config.bg_opacity,
             overlay_config.text_color,
@@ -621,6 +754,7 @@ class GameVoiceTranslator:
             current_language_flow[0],
             current_language_flow[1],
             current_whisper_device,
+            describe_model_download_source(*current_model_download_source),
             normalize_translation_provider(self.config.translation.provider),
             self.config.translation.model,
             self.config.translation.endpoint,
@@ -691,7 +825,10 @@ class GameVoiceTranslator:
     def _initialize_backend_services(self):
         try:
             self._notify_user("语音识别模型", "正在后台加载 Whisper 模型，首次运行可能需要等待", "状态")
-            self._speech_recognizer = SpeechRecognizer(self.config.whisper)
+            self._speech_recognizer = SpeechRecognizer(
+                self.config.whisper,
+                self._notify_model_download_progress,
+            )
             self._translator = GameTranslator(self.config.translation)
             self._start_translation_loop()
             self._speech_recognizer.initialize()
@@ -906,7 +1043,7 @@ class GameVoiceTranslator:
         hotkeys = self.config.hotkeys
         print("""
 ╔══════════════════════════════════════════════╗
-║       游戏语音实时翻译器  v0.1.4          ║
+║       游戏语音实时翻译器  v0.1.5          ║
 ╠══════════════════════════════════════════════╣
 ║  热键:                                       ║
 ║    {toggle_overlay:<14} 切换浮窗显示/隐藏       ║

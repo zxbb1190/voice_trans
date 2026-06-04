@@ -23,6 +23,8 @@ game_voice_translator/
 ├── translator.py        # OpenAI 兼容 / Google Cloud Translation 翻译
 ├── overlay.py           # PyQt5 游戏浮窗
 ├── mobile_server.py     # 手机端 WebSocket 服务器
+├── tests/               # 可自动运行的轻量测试
+├── diagnostics/         # 手动排查脚本，不参与正常运行
 ├── config.example.json  # 配置模板
 ├── config.json          # 本地配置文件（不会提交到 Git）
 ├── requirements.txt     # Python 依赖
@@ -31,6 +33,13 @@ game_voice_translator/
 ├── README_EN.md         # English documentation
 └── README.md
 ```
+
+自动测试可运行：
+```bash
+python -m unittest discover -s tests
+```
+
+手动排查脚本放在 `diagnostics/`，例如依赖导入检查、翻译接口检查、手机二维码生成等。需要真实 API 的脚本会读取本地 `config.json`，不会用于正常启动或打包。
 
 ## 🚀 快速开始
 
@@ -139,6 +148,7 @@ python main.py
 ### 状态与错误提示
 除了正常翻译结果，浮窗也会显示必要的用户提示，例如：
 - 启动进度、Whisper 模型加载状态
+- lite 包首次下载 Whisper 模型时的模型名、下载来源、已下载大小、总大小和百分比
 - 当前选中的系统声音 / Loopback 音频设备
 - 音频捕获启动失败或设备枚举失败
 - 翻译暂停 / 恢复、清空历史、热键触发
@@ -157,6 +167,8 @@ python main.py
 | `whisper.model_size` | 模型大小: tiny/base/small/medium (越大越准越慢) |
 | `whisper.device` | 识别设备，默认 `cpu`，可在齿轮设置的“识别设备”里选择；确认已安装 NVIDIA CUDA 运行环境后可手动选择 `auto` 或 `cuda` |
 | `whisper.compute_type` | 计算精度，默认 `auto`：CPU 使用 int8，CUDA 使用 float16 |
+| `whisper.model_download_source` | lite 包首次下载 Whisper 模型的下载源：`modelscope` 为 ModelScope 国内源（默认、推荐国内用户），`huggingface` 为官方 Hugging Face，`custom_hf_endpoint` 为自定义 Hugging Face Endpoint |
+| `whisper.model_download_endpoint` | 仅 `custom_hf_endpoint` 使用的 Hugging Face 兼容 Endpoint；ModelScope 不是 Hugging Face endpoint，不能填在这里 |
 | `whisper.language` | 固定识别语言，会随标题栏左侧语言选择同步 |
 | `whisper.prompt_profile` | 识别提示词场景，默认 `none`，避免 Whisper 幻听提示词；必要时可手动改为 `general` 或 `game` |
 | `whisper.vad_filter` | faster-whisper 内部 VAD，默认关闭，避免和外部切段重复吞字 |
@@ -209,12 +221,20 @@ python main.py
 - 在齿轮设置里把“识别设备”改成 `CPU（推荐）`，然后重启程序
 - 只有确认电脑有 NVIDIA 显卡，并且安装了匹配 faster-whisper/ctranslate2 的 CUDA 12 与 cuDNN 运行库后，才建议开启 `cuda`
 
-### 4. 翻译延迟高
+### 4. lite 包首次下载模型很慢或失败
+- 浮窗会显示正在下载的 Whisper 模型、仓库、下载来源、已下载大小、总大小和百分比
+- 下载失败时会显示具体网络错误，并写入程序目录的 `app.log` 和 `crash_report.txt`
+- 默认下载源是 ModelScope 国内源，会从 `modelscope.cn` 拉取 `Systran/faster-whisper-small` 的必要文件
+- `hf-mirror.com` 目前会跳转回 `huggingface.co`，用户网络访问不了 Hugging Face 时不可靠；如需尝试，只能在“自定义 Hugging Face Endpoint”里填写
+- 如果 ModelScope 或自定义源仍失败，可以切到官方 Hugging Face 后重启，或直接下载 full 包
+- full 包已内置 Whisper small 模型，不需要首次下载模型
+
+### 5. 翻译延迟高
 - 检查网络连接
 - 降低 `whisper.model_size` 以加快识别
 - 使用本地翻译模型 (需自行部署)
 
-### 5. 手机端无法连接
+### 6. 手机端无法连接
 - 检查防火墙是否放行 8765 端口
 - 确认手机和电脑在同一局域网
 - 尝试使用电脑 IP 而非 localhost

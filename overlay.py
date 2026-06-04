@@ -37,6 +37,11 @@ WHISPER_DEVICE_OPTIONS = (
     ("cuda", "NVIDIA GPU / CUDA"),
 )
 WHISPER_DEVICE_LABELS = dict(WHISPER_DEVICE_OPTIONS)
+WHISPER_DOWNLOAD_SOURCE_OPTIONS = (
+    ("modelscope", "ModelScope 国内源（推荐）"),
+    ("huggingface", "官方 Hugging Face"),
+    ("custom_hf_endpoint", "自定义 Hugging Face Endpoint"),
+)
 
 
 def _normalize_language_code(value: str, default: str = "en") -> str:
@@ -66,6 +71,62 @@ def _normalize_whisper_device(value: str) -> str:
     }
     value = aliases.get(value, value)
     return value if value in WHISPER_DEVICE_LABELS else "cpu"
+
+
+def _normalize_model_download_endpoint(value: str) -> str:
+    endpoint = (value or "").strip()
+    if endpoint.lower() in ("official", "huggingface", "huggingface.co", "default", "none"):
+        return ""
+    if not endpoint:
+        return ""
+    aliases = {
+        "hf-mirror": "https://hf-mirror.com",
+        "hf-mirror.com": "https://hf-mirror.com",
+        "mirror": "https://hf-mirror.com",
+        "china": "https://hf-mirror.com",
+        "cn": "https://hf-mirror.com",
+    }
+    endpoint = aliases.get(endpoint.lower(), endpoint)
+    endpoint = endpoint.rstrip("/")
+    if endpoint in ("https://huggingface.co", "http://huggingface.co"):
+        return ""
+    if not endpoint.startswith(("http://", "https://")):
+        endpoint = "https://" + endpoint
+    return endpoint.rstrip("/")
+
+
+def _normalize_model_download_source(value: str, endpoint: str = "") -> str:
+    source = (value or "").strip().lower().replace("-", "_")
+    normalized_endpoint = _normalize_model_download_endpoint(endpoint)
+    if not source and normalized_endpoint:
+        return "custom_hf_endpoint"
+    aliases = {
+        "": "modelscope",
+        "default": "modelscope",
+        "china": "modelscope",
+        "cn": "modelscope",
+        "domestic": "modelscope",
+        "modelscope": "modelscope",
+        "model_scope": "modelscope",
+        "ms": "modelscope",
+        "official": "huggingface",
+        "huggingface": "huggingface",
+        "hugging_face": "huggingface",
+        "hf": "huggingface",
+        "custom": "custom_hf_endpoint",
+        "custom_hf": "custom_hf_endpoint",
+        "custom_huggingface": "custom_hf_endpoint",
+        "custom_hugging_face": "custom_hf_endpoint",
+        "custom_hf_endpoint": "custom_hf_endpoint",
+    }
+    normalized = aliases.get(source, source)
+    if normalized not in {"modelscope", "huggingface", "custom_hf_endpoint"}:
+        normalized = "custom_hf_endpoint" if normalized_endpoint else "modelscope"
+    if normalized == "huggingface" and normalized_endpoint:
+        return "custom_hf_endpoint"
+    if normalized == "custom_hf_endpoint" and not normalized_endpoint:
+        return "huggingface"
+    return normalized
 
 
 @dataclass
@@ -106,6 +167,8 @@ class AudioDeviceConfig:
 @dataclass
 class WhisperDeviceConfig:
     device: str = "cpu"
+    model_download_source: str = "modelscope"
+    model_download_endpoint: str = ""
 
 
 class TranslationItem:
@@ -407,6 +470,21 @@ class SettingsDialog(QDialog):
         self.whisper_device_combo.currentIndexChanged.connect(self._preview)
         form.addRow("识别设备", self.whisper_device_combo)
 
+        self.model_download_source_combo = QComboBox()
+        self.model_download_source_combo.setToolTip("lite 包首次运行会下载 Whisper 模型；大陆网络推荐 ModelScope 国内源")
+        self.model_download_endpoint_input = QLineEdit(
+            _normalize_model_download_endpoint(getattr(self.whisper_config, "model_download_endpoint", ""))
+        )
+        self.model_download_endpoint_input.setPlaceholderText("https://your-hf-endpoint.example.com")
+        self.model_download_endpoint_input.setToolTip("仅自定义 Hugging Face Endpoint 使用；ModelScope 不是 Hugging Face endpoint")
+        self.model_download_endpoint_input.editingFinished.connect(self._preview)
+        self._fill_model_download_sources()
+        self.model_download_source_combo.currentIndexChanged.connect(self._download_source_changed)
+        download_source_row = QHBoxLayout()
+        download_source_row.addWidget(self.model_download_source_combo)
+        download_source_row.addWidget(self.model_download_endpoint_input)
+        form.addRow("模型下载源", download_source_row)
+
         self.audio_device_combo = QComboBox()
         self.audio_device_combo.setToolTip("优先选择 [系统声音] 或 Loopback；普通麦克风通常录不到游戏声音")
         self.refresh_audio_button = QPushButton("刷新")
@@ -444,7 +522,7 @@ class SettingsDialog(QDialog):
         close_button.clicked.connect(self.close)
         layout.addWidget(close_button)
         self.setLayout(layout)
-        self.resize(640, 500)
+        self.resize(700, 540)
 
     def closeEvent(self, event):
         self._preview()
@@ -487,6 +565,36 @@ class SettingsDialog(QDialog):
                 selected_row = row
         self.whisper_device_combo.setCurrentIndex(selected_row)
         self.whisper_device_combo.blockSignals(False)
+
+    def _fill_model_download_sources(self):
+        self.model_download_source_combo.blockSignals(True)
+        self.model_download_source_combo.clear()
+        selected_source = _normalize_model_download_source(
+            getattr(self.whisper_config, "model_download_source", "modelscope"),
+            getattr(self.whisper_config, "model_download_endpoint", ""),
+        )
+        selected_endpoint = _normalize_model_download_endpoint(
+            getattr(self.whisper_config, "model_download_endpoint", "")
+        )
+        selected_row = 0
+        for row, (source, label) in enumerate(WHISPER_DOWNLOAD_SOURCE_OPTIONS):
+            self.model_download_source_combo.addItem(label, source)
+            if source == selected_source:
+                selected_row = row
+        self.model_download_source_combo.setCurrentIndex(selected_row)
+        self.model_download_source_combo.blockSignals(False)
+        self._refresh_model_download_source_ui()
+
+    def _download_source_changed(self, *args):
+        self._refresh_model_download_source_ui()
+        self._preview()
+
+    def _refresh_model_download_source_ui(self):
+        selected = self.model_download_source_combo.currentData()
+        is_custom = selected == "custom_hf_endpoint"
+        self.model_download_endpoint_input.setEnabled(is_custom)
+        if not is_custom:
+            self.model_download_endpoint_input.setText("")
 
     def _fill_translation_providers(self):
         self.provider_combo.blockSignals(True)
@@ -579,6 +687,17 @@ class SettingsDialog(QDialog):
         self.translation_config.model = self.model_input.text().strip() or self.translation_config.model
         self.translation_config.endpoint = self.endpoint_input.text().strip() or self.translation_config.endpoint
         self.whisper_config.device = _normalize_whisper_device(self.whisper_device_combo.currentData())
+        selected_download_source = self.model_download_source_combo.currentData()
+        self.whisper_config.model_download_source = _normalize_model_download_source(
+            selected_download_source,
+            self.model_download_endpoint_input.text(),
+        )
+        if self.whisper_config.model_download_source == "custom_hf_endpoint":
+            self.whisper_config.model_download_endpoint = _normalize_model_download_endpoint(
+                self.model_download_endpoint_input.text()
+            )
+        else:
+            self.whisper_config.model_download_endpoint = ""
 
         device = self.audio_device_combo.currentData()
         if device:

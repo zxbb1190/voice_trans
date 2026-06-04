@@ -5,13 +5,23 @@
 
 import asyncio
 import inspect
+import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 import numpy as np
+import soxr
 from faster_whisper import WhisperModel
+try:
+    from faster_whisper.utils import _MODELS as FASTER_WHISPER_MODEL_REPOS
+except Exception:
+    FASTER_WHISPER_MODEL_REPOS = {}
 try:
     from faster_whisper.vad import VadOptions
 except Exception:
@@ -52,8 +62,41 @@ ASR_HALLUCINATION_PATTERNS = (
     "谢谢观看",
 )
 
-_LIBROSA = None
-_LIBROSA_IMPORT_FAILED = False
+FASTER_WHISPER_MODEL_FILES = [
+    "config.json",
+    "preprocessor_config.json",
+    "model.bin",
+    "tokenizer.json",
+    "vocabulary.*",
+]
+MODELSCOPE_BASE_URL = "https://www.modelscope.cn"
+MODELSCOPE_REVISION = "master"
+MODELSCOPE_MODEL_FILES = [
+    "config.json",
+    "model.bin",
+    "tokenizer.json",
+    "vocabulary.txt",
+]
+MODELSCOPE_OPTIONAL_MODEL_FILES = [
+    "preprocessor_config.json",
+]
+DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+MODEL_DOWNLOAD_SOURCE_MODEL_SCOPE = "modelscope"
+MODEL_DOWNLOAD_SOURCE_HUGGINGFACE = "huggingface"
+MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT = "custom_hf_endpoint"
+MODEL_DOWNLOAD_SOURCES = {
+    MODEL_DOWNLOAD_SOURCE_MODEL_SCOPE,
+    MODEL_DOWNLOAD_SOURCE_HUGGINGFACE,
+    MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT,
+}
+
+
+class _TqdmOutputSink:
+    def write(self, value):
+        return len(value or "")
+
+    def flush(self):
+        pass
 
 
 @dataclass
@@ -66,6 +109,8 @@ class WhisperConfig:
     vad_filter: bool = False
     vad_parameters: dict = None
     model_dir: str = ".models"
+    model_download_source: str = ""
+    model_download_endpoint: str = ""
     local_files_only: bool = False
     prompt_profile: str = "none"
     initial_prompt: str = ""
@@ -87,15 +132,33 @@ class TranscriptionResult:
     language_probability: float = 0.0
 
 
+@dataclass
+class ModelDownloadProgress:
+    status: str
+    model_name: str
+    repo_id: str = ""
+    source: str = ""
+    downloaded_bytes: int = 0
+    total_bytes: int = 0
+    percent: float = 0.0
+    message: str = ""
+
+
 class SpeechRecognizer:
     """Whisper 语音识别器"""
 
-    def __init__(self, config: WhisperConfig = None):
+    def __init__(
+        self,
+        config: WhisperConfig = None,
+        download_progress_callback: Optional[Callable[[ModelDownloadProgress], None]] = None,
+    ):
         self.config = config or WhisperConfig()
         if self.config.vad_parameters is None:
             self.config.vad_parameters = DEFAULT_VAD_PARAMS.copy()
         self.config.vad_parameters = sanitize_vad_parameters(self.config.vad_parameters)
+        self._download_progress_callback = download_progress_callback
         self._model: Optional[WhisperModel] = None
+        self._model_path: Optional[str] = None
         self._initialized = False
         self._model_dir = Path(self.config.model_dir)
         if not self._model_dir.is_absolute():
@@ -108,6 +171,7 @@ class SpeechRecognizer:
             return
 
         self._model_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_model_downloaded()
         last_error = None
         for device, compute_type in self._model_load_candidates():
             logger.info(
@@ -118,7 +182,7 @@ class SpeechRecognizer:
             )
             try:
                 self._model = WhisperModel(
-                    self.config.model_size,
+                    self._model_path or self.config.model_size,
                     device=device,
                     compute_type=compute_type,
                     download_root=str(self._model_dir),
@@ -139,6 +203,345 @@ class SpeechRecognizer:
                 )
 
         raise RuntimeError("Whisper 模型加载失败，没有可用的设备配置") from last_error
+
+    def _ensure_model_downloaded(self):
+        if self.config.local_files_only:
+            logger.info("Whisper 已启用 local_files_only，仅使用本地模型缓存")
+            return
+
+        repo_id = self._model_repo_id()
+        if not repo_id:
+            logger.info("Whisper 模型不是可识别的 Hugging Face 仓库，跳过预下载进度: {}", self.config.model_size)
+            return
+
+        download_source = self._effective_download_source()
+        endpoint = self._effective_download_endpoint()
+        source = describe_model_download_source(download_source, endpoint)
+        self._emit_download_progress(
+            "checking",
+            repo_id,
+            source,
+            message="正在检查本地模型缓存",
+        )
+        logger.info("检查 Whisper 模型缓存: repo={}, source={}", repo_id, source)
+
+        try:
+            if self._use_local_huggingface_snapshot(repo_id, source):
+                return
+            if download_source == "modelscope":
+                self._download_model_from_modelscope(repo_id, source)
+            else:
+                self._download_model_from_huggingface(repo_id, endpoint, source)
+        except Exception as e:
+            message = format_model_download_error(e, repo_id, source)
+            self._emit_download_progress(
+                "error",
+                repo_id,
+                source,
+                message=message,
+            )
+            raise RuntimeError(message) from e
+
+    def _use_local_huggingface_snapshot(self, repo_id: str, source: str) -> bool:
+        try:
+            from huggingface_hub import snapshot_download
+
+            cached_path = snapshot_download(
+                repo_id,
+                cache_dir=str(self._model_dir),
+                allow_patterns=FASTER_WHISPER_MODEL_FILES,
+                local_files_only=True,
+            )
+            if self._snapshot_has_required_model_files(cached_path):
+                self._model_path = cached_path
+                self._emit_download_progress(
+                    "complete",
+                    repo_id,
+                    source,
+                    downloaded_bytes=0,
+                    total_bytes=0,
+                    percent=100.0,
+                    message="已使用本地模型缓存",
+                )
+                logger.info("已使用本地 Whisper 模型缓存: {}", cached_path)
+                return True
+            logger.warning("本地 Whisper 模型缓存不完整，将重新下载: {}", cached_path)
+        except Exception as cache_error:
+            logger.info("未找到完整本地 Whisper 模型缓存，将在线下载: {}", cache_error)
+        return False
+
+    def _download_model_from_huggingface(self, repo_id: str, endpoint: str, source: str):
+        from huggingface_hub import snapshot_download
+
+        self._model_path = snapshot_download(
+            repo_id,
+            cache_dir=str(self._model_dir),
+            allow_patterns=FASTER_WHISPER_MODEL_FILES,
+            endpoint=endpoint or None,
+            max_workers=4,
+            tqdm_class=self._progress_tqdm_class(repo_id, source),
+        )
+        self._emit_download_progress(
+            "complete",
+            repo_id,
+            source,
+            downloaded_bytes=0,
+            total_bytes=0,
+            percent=100.0,
+            message="模型缓存已就绪",
+        )
+        logger.info("Whisper 模型缓存已就绪: {}", repo_id)
+
+    def _download_model_from_modelscope(self, repo_id: str, source: str):
+        model_dir = self._modelscope_model_dir(repo_id)
+        if self._snapshot_has_required_model_files(str(model_dir)):
+            self._model_path = str(model_dir)
+            self._emit_download_progress(
+                "complete",
+                repo_id,
+                source,
+                downloaded_bytes=0,
+                total_bytes=0,
+                percent=100.0,
+                message="已使用 ModelScope 本地模型缓存",
+            )
+            logger.info("已使用 ModelScope 本地模型缓存: {}", model_dir)
+            return
+
+        model_dir.mkdir(parents=True, exist_ok=True)
+        files = self._modelscope_model_files(repo_id)
+        total_bytes = sum(int(file_info["Size"]) for file_info in files)
+        downloaded_bytes = 0
+        for file_info in files:
+            dest = model_dir / file_info["Path"]
+            expected_size = int(file_info["Size"])
+            if dest.is_file() and dest.stat().st_size == expected_size:
+                downloaded_bytes += expected_size
+
+        self._emit_download_progress(
+            "downloading",
+            repo_id,
+            source,
+            downloaded_bytes=downloaded_bytes,
+            total_bytes=total_bytes,
+            percent=(downloaded_bytes / total_bytes * 100.0) if total_bytes else 0.0,
+            message="正在从 ModelScope 下载模型文件",
+        )
+
+        for file_info in files:
+            file_path = file_info["Path"]
+            expected_size = int(file_info["Size"])
+            dest = model_dir / file_path
+            if dest.is_file() and dest.stat().st_size == expected_size:
+                continue
+
+            if dest.exists():
+                dest.unlink()
+            part_path = dest.with_suffix(dest.suffix + ".part")
+            if part_path.exists():
+                part_path.unlink()
+            dest.parent.mkdir(parents=True, exist_ok=True)
+
+            url = self._modelscope_resolve_url(repo_id, file_path)
+            logger.info("从 ModelScope 下载模型文件: {} -> {}", file_path, dest)
+            request = Request(url, headers={"User-Agent": "GameVoiceTranslator/0.1.5"})
+            try:
+                with urlopen(request, timeout=30) as response, part_path.open("wb") as output:
+                    while True:
+                        chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        output.write(chunk)
+                        downloaded_bytes += len(chunk)
+                        self._emit_download_progress(
+                            "downloading",
+                            repo_id,
+                            source,
+                            downloaded_bytes=downloaded_bytes,
+                            total_bytes=total_bytes,
+                            percent=(downloaded_bytes / total_bytes * 100.0) if total_bytes else 0.0,
+                            message=f"正在下载 {file_path}",
+                        )
+            except (HTTPError, URLError, TimeoutError, OSError) as error:
+                raise RuntimeError(f"ModelScope 下载 {file_path} 失败: {error}") from error
+
+            actual_size = part_path.stat().st_size
+            if actual_size != expected_size:
+                part_path.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"ModelScope 下载 {file_path} 不完整: {actual_size} / {expected_size} bytes"
+                )
+            part_path.replace(dest)
+
+        if not self._snapshot_has_required_model_files(str(model_dir)):
+            raise RuntimeError("ModelScope 模型文件下载完成后仍不完整")
+
+        self._model_path = str(model_dir)
+        self._emit_download_progress(
+            "complete",
+            repo_id,
+            source,
+            downloaded_bytes=total_bytes,
+            total_bytes=total_bytes,
+            percent=100.0,
+            message="ModelScope 模型缓存已就绪",
+        )
+        logger.info("ModelScope 模型缓存已就绪: {}", model_dir)
+
+    def _modelscope_model_files(self, repo_id: str) -> list:
+        url = self._modelscope_file_list_url(repo_id)
+        request = Request(url, headers={"User-Agent": "GameVoiceTranslator/0.1.5"})
+        try:
+            with urlopen(request, timeout=20) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"ModelScope 文件列表获取失败: {error}") from error
+
+        if int(payload.get("Code", 0)) != 200:
+            raise RuntimeError(f"ModelScope 文件列表返回异常: {payload}")
+
+        all_files = payload.get("Data", {}).get("Files", [])
+        wanted = set(MODELSCOPE_MODEL_FILES + MODELSCOPE_OPTIONAL_MODEL_FILES)
+        selected = [
+            file_info
+            for file_info in all_files
+            if file_info.get("Path") in wanted
+        ]
+        found = {file_info.get("Path") for file_info in selected}
+        missing = [name for name in MODELSCOPE_MODEL_FILES if name not in found]
+        if missing:
+            raise RuntimeError(f"ModelScope 仓库缺少必要模型文件: {', '.join(missing)}")
+        return sorted(selected, key=lambda item: MODELSCOPE_MODEL_FILES.index(item["Path"]) if item["Path"] in MODELSCOPE_MODEL_FILES else 99)
+
+    def _modelscope_model_dir(self, repo_id: str) -> Path:
+        return self._model_dir / "modelscope" / repo_id.replace("\\", "/")
+
+    def _modelscope_file_list_url(self, repo_id: str) -> str:
+        return f"{MODELSCOPE_BASE_URL}/api/v1/models/{_quote_repo_id(repo_id)}/repo/files?Revision={MODELSCOPE_REVISION}"
+
+    def _modelscope_resolve_url(self, repo_id: str, file_path: str) -> str:
+        return f"{MODELSCOPE_BASE_URL}/models/{_quote_repo_id(repo_id)}/resolve/{MODELSCOPE_REVISION}/{quote(file_path, safe='/')}"
+
+    def _snapshot_has_required_model_files(self, snapshot_path: str) -> bool:
+        path = Path(snapshot_path)
+        return (
+            (path / "config.json").is_file()
+            and (path / "model.bin").is_file()
+            and (
+                (path / "tokenizer.json").is_file()
+                or any(path.glob("vocabulary.*"))
+            )
+        )
+
+    def _model_repo_id(self) -> Optional[str]:
+        model_size = (self.config.model_size or "").strip()
+        if not model_size:
+            return None
+
+        model_path = Path(model_size).expanduser()
+        if model_path.exists():
+            return None
+
+        if "/" in model_size.replace("\\", "/"):
+            return model_size.replace("\\", "/")
+
+        repo_id = FASTER_WHISPER_MODEL_REPOS.get(model_size)
+        if repo_id:
+            return repo_id
+        return None
+
+    def _effective_download_endpoint(self) -> str:
+        configured = normalize_model_download_endpoint(
+            getattr(self.config, "model_download_endpoint", "")
+        )
+        if configured:
+            return configured
+        return normalize_model_download_endpoint(os.environ.get("HF_ENDPOINT", ""))
+
+    def _effective_download_source(self) -> str:
+        return normalize_model_download_source(
+            getattr(self.config, "model_download_source", "modelscope"),
+            getattr(self.config, "model_download_endpoint", ""),
+        )
+
+    def _progress_tqdm_class(self, repo_id: str, source: str):
+        callback = self._download_progress_callback
+        model_name = self.config.model_size
+
+        try:
+            from tqdm.auto import tqdm as base_tqdm
+        except Exception:
+            return None
+
+        if callback is None:
+            return base_tqdm
+
+        class DownloadProgressTqdm(base_tqdm):
+            def __init__(self, *args, **kwargs):
+                self._is_bytes_progress = kwargs.get("unit") == "B"
+                kwargs["file"] = _TqdmOutputSink()
+                kwargs.setdefault("leave", False)
+                super().__init__(*args, **kwargs)
+                if self._is_bytes_progress:
+                    self._emit("downloading")
+
+            def update(self, n=1):
+                result = super().update(n)
+                if self._is_bytes_progress:
+                    self._emit("downloading")
+                return result
+
+            def refresh(self, *args, **kwargs):
+                result = super().refresh(*args, **kwargs)
+                if getattr(self, "_is_bytes_progress", False):
+                    self._emit("downloading")
+                return result
+
+            def set_description(self, desc=None, refresh=True):
+                result = super().set_description(desc=desc, refresh=refresh)
+                if getattr(self, "_is_bytes_progress", False) and desc:
+                    self._emit("complete" if "complete" in str(desc).lower() else "downloading")
+                return result
+
+            def _emit(self, status: str):
+                total = int(self.total or 0)
+                downloaded = int(self.n or 0)
+                percent = (downloaded / total * 100.0) if total else 0.0
+                callback(ModelDownloadProgress(
+                    status=status,
+                    model_name=model_name,
+                    repo_id=repo_id,
+                    source=source,
+                    downloaded_bytes=downloaded,
+                    total_bytes=total,
+                    percent=percent,
+                    message="正在下载模型文件" if status == "downloading" else "模型下载完成",
+                ))
+
+        return DownloadProgressTqdm
+
+    def _emit_download_progress(
+        self,
+        status: str,
+        repo_id: str,
+        source: str,
+        downloaded_bytes: int = 0,
+        total_bytes: int = 0,
+        percent: float = 0.0,
+        message: str = "",
+    ):
+        if self._download_progress_callback is None:
+            return
+        self._download_progress_callback(ModelDownloadProgress(
+            status=status,
+            model_name=self.config.model_size,
+            repo_id=repo_id,
+            source=source,
+            downloaded_bytes=downloaded_bytes,
+            total_bytes=total_bytes,
+            percent=percent,
+            message=message,
+        ))
 
     def _model_load_candidates(self):
         configured_device = (self.config.device or "auto").strip().lower()
@@ -185,21 +588,25 @@ class SpeechRecognizer:
 
         original_len = len(audio_array)
         try:
-            librosa = _load_librosa()
-            resampled = librosa.resample(
+            resampled = soxr.resample(
                 audio_array,
-                orig_sr=sample_rate,
-                target_sr=16000,
+                sample_rate,
+                16000,
+                quality="soxr_hq",
             ).astype(np.float32, copy=False)
+            resampled = _fix_resampled_length(
+                resampled,
+                int(np.ceil(original_len * 16000 / sample_rate)),
+            )
             logger.debug(
-                "librosa 重采样: {}Hz -> 16000Hz, {} -> {} 点",
+                "soxr 重采样: {}Hz -> 16000Hz, {} -> {} 点",
                 sample_rate,
                 original_len,
                 len(resampled),
             )
             return resampled
         except Exception as e:
-            logger.warning("librosa 重采样失败，退回线性插值: {}", e)
+            logger.warning("soxr 重采样失败，退回线性插值: {}", e)
             target_len = int(original_len * 16000 / sample_rate)
             x_old = np.linspace(0, 1, original_len, dtype=np.float32)
             x_new = np.linspace(0, 1, target_len, dtype=np.float32)
@@ -381,19 +788,131 @@ def sanitize_vad_parameters(vad_parameters: Optional[dict]) -> Optional[dict]:
     return cleaned
 
 
-def _load_librosa():
-    global _LIBROSA, _LIBROSA_IMPORT_FAILED
-    if _LIBROSA is not None:
-        return _LIBROSA
-    if _LIBROSA_IMPORT_FAILED:
-        raise RuntimeError("librosa 不可用")
-    try:
-        import librosa
-    except Exception:
-        _LIBROSA_IMPORT_FAILED = True
-        raise
-    _LIBROSA = librosa
-    return _LIBROSA
+def _fix_resampled_length(audio_array: np.ndarray, target_len: int) -> np.ndarray:
+    """Match librosa's default fixed-length soxr output."""
+    if len(audio_array) == target_len:
+        return audio_array
+    if len(audio_array) > target_len:
+        return audio_array[:target_len].astype(np.float32, copy=False)
+    return np.pad(audio_array, (0, target_len - len(audio_array))).astype(np.float32, copy=False)
+
+
+def normalize_model_download_endpoint(value: str) -> str:
+    endpoint = (value or "").strip()
+    if endpoint.lower() in ("official", "huggingface", "huggingface.co", "default", "none"):
+        return ""
+    if not endpoint:
+        return ""
+    aliases = {
+        "hf-mirror": "https://hf-mirror.com",
+        "hf-mirror.com": "https://hf-mirror.com",
+        "mirror": "https://hf-mirror.com",
+        "china": "https://hf-mirror.com",
+        "cn": "https://hf-mirror.com",
+    }
+    endpoint = aliases.get(endpoint.lower(), endpoint)
+    endpoint = endpoint.rstrip("/")
+    if endpoint in ("https://huggingface.co", "http://huggingface.co"):
+        return ""
+    if not endpoint.startswith(("http://", "https://")):
+        endpoint = "https://" + endpoint
+    return endpoint.rstrip("/")
+
+
+def normalize_model_download_source(source: str, endpoint: str = "") -> str:
+    value = (source or "").strip().lower().replace("-", "_")
+    normalized_endpoint = normalize_model_download_endpoint(endpoint)
+    if not value and normalized_endpoint:
+        return MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT
+    aliases = {
+        "": MODEL_DOWNLOAD_SOURCE_MODEL_SCOPE,
+        "default": MODEL_DOWNLOAD_SOURCE_MODEL_SCOPE,
+        "china": MODEL_DOWNLOAD_SOURCE_MODEL_SCOPE,
+        "cn": MODEL_DOWNLOAD_SOURCE_MODEL_SCOPE,
+        "domestic": MODEL_DOWNLOAD_SOURCE_MODEL_SCOPE,
+        "modelscope": MODEL_DOWNLOAD_SOURCE_MODEL_SCOPE,
+        "model_scope": MODEL_DOWNLOAD_SOURCE_MODEL_SCOPE,
+        "ms": MODEL_DOWNLOAD_SOURCE_MODEL_SCOPE,
+        "official": MODEL_DOWNLOAD_SOURCE_HUGGINGFACE,
+        "huggingface": MODEL_DOWNLOAD_SOURCE_HUGGINGFACE,
+        "huggingface.co": MODEL_DOWNLOAD_SOURCE_HUGGINGFACE,
+        "hugging_face": MODEL_DOWNLOAD_SOURCE_HUGGINGFACE,
+        "hf": MODEL_DOWNLOAD_SOURCE_HUGGINGFACE,
+        "none": MODEL_DOWNLOAD_SOURCE_HUGGINGFACE,
+        "custom": MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT,
+        "custom_hf": MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT,
+        "custom_huggingface": MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT,
+        "custom_hugging_face": MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT,
+        "custom_hf_endpoint": MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT,
+    }
+    if value in aliases:
+        normalized = aliases[value]
+    elif value in MODEL_DOWNLOAD_SOURCES:
+        normalized = value
+    else:
+        normalized = MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT if normalized_endpoint else MODEL_DOWNLOAD_SOURCE_MODEL_SCOPE
+
+    if normalized == MODEL_DOWNLOAD_SOURCE_HUGGINGFACE and normalized_endpoint:
+        return MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT
+    if normalized == MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT and not normalized_endpoint:
+        return MODEL_DOWNLOAD_SOURCE_HUGGINGFACE
+    return normalized
+
+
+def describe_model_download_source(source: str = "", endpoint: str = "") -> str:
+    raw_source = (source or "").strip()
+    source_aliases = {
+        "",
+        "default",
+        "china",
+        "cn",
+        "domestic",
+        "modelscope",
+        "model_scope",
+        "ms",
+        "official",
+        "huggingface",
+        "huggingface.co",
+        "hugging_face",
+        "hf",
+        "none",
+        "custom",
+        "custom_hf",
+        "custom_huggingface",
+        "custom_hugging_face",
+        "custom_hf_endpoint",
+    }
+    source_key = raw_source.lower().replace("-", "_")
+    if endpoint == "" and raw_source and source_key not in source_aliases and source_key not in MODEL_DOWNLOAD_SOURCES:
+        endpoint = raw_source
+        source = MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT
+
+    source = normalize_model_download_source(source, endpoint)
+    endpoint = normalize_model_download_endpoint(endpoint)
+    if source == MODEL_DOWNLOAD_SOURCE_MODEL_SCOPE:
+        return "ModelScope 国内源"
+    if source == MODEL_DOWNLOAD_SOURCE_HUGGINGFACE:
+        return "官方 Hugging Face"
+    if endpoint == "https://hf-mirror.com":
+        return "自定义 Hugging Face Endpoint: hf-mirror.com"
+    return f"自定义 Hugging Face Endpoint: {endpoint}" if endpoint else "自定义 Hugging Face Endpoint"
+
+
+def format_model_download_error(error: Exception, repo_id: str, source: str) -> str:
+    error_text = str(error).strip() or repr(error)
+    return (
+        "模型下载失败\n"
+        f"模型: {repo_id}\n"
+        f"来源: {source}\n"
+        f"错误: {type(error).__name__}: {error_text}\n"
+        "可以在设置里切换模型下载源后重启；大陆网络优先选择 ModelScope 国内源。"
+        "如果程序已退出，也可以编辑 user_settings.json 或 config.json 里的 "
+        "whisper.model_download_source 后再启动，或改用 full 包。"
+    )
+
+
+def _quote_repo_id(repo_id: str) -> str:
+    return quote((repo_id or "").replace("\\", "/"), safe="/")
 
 
 def is_likely_asr_hallucination(text: str) -> bool:

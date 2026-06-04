@@ -23,6 +23,8 @@ game_voice_translator/
 ├── translator.py         # OpenAI-compatible / Google Cloud Translation client
 ├── overlay.py            # PyQt5 overlay window
 ├── mobile_server.py      # Mobile WebSocket server
+├── tests/                # Lightweight automated tests
+├── diagnostics/          # Manual troubleshooting scripts
 ├── config.example.json   # Configuration template
 ├── config.json           # Local config, ignored by Git
 ├── requirements.txt      # Python dependencies
@@ -31,6 +33,13 @@ game_voice_translator/
 ├── README.md             # Chinese documentation
 └── README_EN.md          # English documentation
 ```
+
+Run automated tests with:
+```bash
+python -m unittest discover -s tests
+```
+
+Manual troubleshooting scripts live in `diagnostics/`, including import checks, translation API checks, and mobile QR generation. Scripts that call real APIs read the local `config.json` and are not part of normal startup or packaging.
 
 ## Quick Start
 
@@ -137,6 +146,7 @@ Choose the fixed recognition and translation direction directly in the overlay t
 ### Status And Error Messages
 Important user-facing messages are shown in the overlay, including:
 - Startup progress and Whisper model loading
+- Whisper model name, download source, downloaded size, total size, and percentage during the lite package's first model download
 - Selected system-audio / Loopback device
 - Audio capture startup or device enumeration errors
 - Pause/resume, clear history, and hotkey events
@@ -155,6 +165,8 @@ Edit `config.json` or use the overlay settings:
 | `whisper.model_size` | Whisper model size: tiny/base/small/medium |
 | `whisper.device` | Recognition device, default `cpu`; users can change it from the gear settings under Recognition Device. Use `auto` or `cuda` only after installing a matching NVIDIA CUDA runtime |
 | `whisper.compute_type` | Compute precision, default `auto`: int8 on CPU, float16 on CUDA |
+| `whisper.model_download_source` | First-run Whisper model download source for lite packages: `modelscope` for ModelScope China source (default and recommended for mainland China), `huggingface` for the official Hugging Face Hub, or `custom_hf_endpoint` for a custom Hugging Face Endpoint |
+| `whisper.model_download_endpoint` | Hugging Face-compatible endpoint used only when `model_download_source` is `custom_hf_endpoint`; ModelScope is not a Hugging Face endpoint and should not be entered here |
 | `whisper.language` | Fixed recognition language, synchronized with the left title-bar language dropdown |
 | `whisper.prompt_profile` | Recognition prompt profile, default `none` to avoid Whisper hallucinating the prompt; optionally use `general` or `game` manually |
 | `whisper.vad_filter` | faster-whisper internal VAD, disabled by default to avoid double-cutting speech |
@@ -211,6 +223,14 @@ Edit `config.json` or use the overlay settings:
 - The default configuration uses CPU recognition and does not require CUDA.
 - In the gear settings, change Recognition Device to `CPU (Recommended)`, then restart the app.
 - Use `cuda` only on an NVIDIA GPU machine with a matching CUDA 12 and cuDNN runtime for faster-whisper/ctranslate2.
+
+### Lite Package Model Download Is Slow Or Fails
+- The overlay shows the Whisper model, repository, download source, downloaded size, total size, and percentage.
+- Download failures show the concrete network error and are also written to `app.log` and `crash_report.txt` in the app folder.
+- The default source is ModelScope and downloads the required `Systran/faster-whisper-small` files from `modelscope.cn`.
+- `hf-mirror.com` currently redirects back to `huggingface.co`, so it is unreliable when the user's network cannot reach Hugging Face. If you still want to try it, enter it only as a custom Hugging Face Endpoint.
+- If ModelScope or a custom source still fails, switch to the official Hugging Face source and restart, or use the full package.
+- The full package already includes the Whisper small model and does not need the first-run model download.
 
 ## Scope
 This tool captures Windows system playback audio. It is not hard-coded for specific games and should not claim individual game compatibility without testing. If the game voice is audible through the selected playback device and Windows exposes a matching system-audio/loopback capture device, it can usually be tried.
