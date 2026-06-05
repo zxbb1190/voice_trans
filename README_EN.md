@@ -8,12 +8,16 @@ Website: <https://voxgo.cn/><br>
 GitHub: <https://github.com/zxbb1190/VoxGo_game_voice_trans>
 
 ## Features
+- **First-run setup wizard**: The first launch walks the player through translation and audio tests, then saves `setup_completed`.
+- **API Key test**: The wizard and settings dialog can make one real translation request to verify the Key, model, and endpoint.
+- **Audio device test**: Opens the selected device and shows a live level bar so players can confirm game/Discord/video audio is detected.
 - **System-audio capture**: Captures Windows playback audio through WASAPI Loopback, not the microphone.
-- **Local speech recognition**: Uses faster-whisper for offline speech-to-text with a fixed Chinese or English recognition language.
-- **Fixed translation direction**: Choose the recognition language and translation target from the overlay title bar, with one-click swap.
+- **Local speech recognition**: Uses faster-whisper for offline speech-to-text, currently with fixed English or Chinese recognition.
+- **English-Chinese translation**: Officially supports English ↔ Chinese today. Choose the recognition language and translation target from the overlay title bar, with one-click swap.
 - **Multiple translation providers**: Supports OpenAI-compatible Chat Completions APIs and Google Cloud Translation Basic v2.
 - **In-game overlay**: Transparent always-on-top PyQt overlay for translation results.
 - **Visible status and error messages**: Startup status, selected audio device, pause/resume events, API status codes, and provider error messages are shown in the overlay.
+- **Debug and feedback loop**: Debug mode records the latest recognition/translation/overlay latency, and the feedback button generates a diagnostic template.
 - **Mobile mirror**: Pushes translations to a browser on the same LAN through WebSocket.
 - **Global hotkeys**: Toggle overlay, clear history, and pause/resume translation.
 
@@ -46,15 +50,27 @@ python -m unittest discover -s tests
 
 Manual troubleshooting scripts live in `diagnostics/`, including import checks, translation API checks, and mobile QR generation. Scripts that call real APIs read the local `config.json` and are not part of normal startup or packaging.
 
-## Quick Start
+## Player Quick Start
 
-### 1. Install Dependencies
+### 1. Download Or Install
 Double-click `install.bat`, or run:
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Configure Translation API
+If you use a portable Release package, unzip it and run `VoxGo.exe`. The lite package downloads the Whisper model on first run; the full package already includes Whisper small and is better for unstable networks.
+
+### 2. Complete The First-Run Wizard
+The first launch opens the setup wizard before Whisper starts loading. Complete this loop:
+- Choose a translation provider and fill in the API Key, model name, and compatible endpoint.
+- Click "Test API Key" to confirm the real translation API returns a result.
+- Choose a `[System Audio]` / `Loopback` audio device.
+- Click "Test Audio", play game, Discord, or video voice, and confirm the level bar moves and shows sound detected.
+- Click "Finish And Start"; the app saves `app.setup_completed=true` in `user_settings.json`, then starts loading the recognizer.
+
+Clicking "Set Up Later And Start" or closing the wizard also continues startup. You can reopen the gear settings later to retest the API Key and audio device.
+
+### 3. Configure Translation API Manually (Optional)
 Copy the example config first:
 ```bat
 copy config.example.json config.json
@@ -104,7 +120,7 @@ The Google option uses the official **Cloud Translation API Basic v2**, not a ge
 
 Google Cloud Translation pricing and free quota are controlled by Google: <https://cloud.google.com/translate/pricing>
 
-### 3. Select an Audio Device
+### 4. Select an Audio Device
 The app is designed to capture the audio that Windows is playing through your speakers, headphones, HDMI output, USB sound card, or virtual cable.
 
 In the overlay settings, prefer devices labeled `[System Audio]` or `Loopback`, especially the one matching your current Windows playback device. Do not choose a normal microphone unless you intentionally want room audio; microphones usually cannot capture game voice playback directly.
@@ -126,13 +142,13 @@ NVIDIA GPU users can also try NVIDIA Broadcast / RTX Voice as a speech denoising
 
 Note: NVIDIA Broadcast / RTX Voice is best for voice-chat denoising and virtual microphone/speaker workflows. For full game/system playback capture, prefer `[System Audio]` / `Loopback`, or use VB-Cable.
 
-### 4. Start the App
+### 5. Start the App
 Double-click `run.bat`, or run:
 ```bash
 python main.py
 ```
 
-If you use a portable Release package, unzip it and run `VoxGo.exe`. The lite package downloads the Whisper model on first run; the full package already includes Whisper small.
+Before joining a game or voice channel, use the gear settings to confirm both "Test Translation" and "Test Audio" pass. If you get stuck, click "Submit Feedback" in settings and paste the generated diagnostic template into a GitHub Issue.
 
 ## Usage
 
@@ -141,14 +157,16 @@ If you use a portable Release package, unzip it and run `VoxGo.exe`. The lite pa
 - **Ctrl+Alt+C**: Clear translation history
 - **Ctrl+Alt+S**: Pause/resume translation
 - **Drag overlay**: Move the overlay window
-- **Gear button**: Configure translation provider, API Key, model name, endpoint, audio device, opacity, colors, and hotkeys
+- **Gear button**: Configure translation provider, test API Key, test audio device, enable debug mode, submit feedback, and adjust opacity, colors, and hotkeys
 
 ### Translation Direction
 Choose the fixed recognition and translation direction directly in the overlay title bar:
 - The left dropdown is the recognition language.
 - The right dropdown is the translation target language.
 - The middle button swaps the direction.
+- Officially supported directions are English → Chinese and Chinese → English.
 - Mixed Chinese/English terms are preserved where possible, but the recognition and translation direction follows the selected dropdowns.
+- Other languages are not exposed as selectable languages yet. Even when a provider supports more languages, VoxGo's current recognition and translation flow is built for English-Chinese use.
 
 ### Status And Error Messages
 Important user-facing messages are shown in the overlay, including:
@@ -158,6 +176,9 @@ Important user-facing messages are shown in the overlay, including:
 - Audio capture startup or device enumeration errors
 - Pause/resume, clear history, and hotkey events
 - Translation API timeout, provider HTTP status code, and provider error message
+
+### Debug And Feedback
+The settings dialog can enable debug mode. The app writes the latest speech-detected, recognition, translation, and overlay-update latency to `app.log`. The "Submit Feedback" button generates a diagnostic template with version, Windows build, audio device, translation provider, latest latency, and log paths.
 
 ### Mobile View
 1. Keep your PC and phone on the same LAN.
@@ -169,12 +190,16 @@ Edit `config.json` or use the overlay settings:
 
 | Key | Description |
 |-----|-------------|
+| `app.setup_completed` | Whether the first-run wizard has been completed; saved to `user_settings.json` after setup |
+| `debug.enabled` | Whether debug mode records the latest end-to-end latency |
 | `whisper.model_size` | Whisper model size: tiny/base/small/medium |
 | `whisper.device` | Recognition device, default `cpu`; users can change it from the gear settings under Recognition Device. Use `auto` or `cuda` only after installing a matching NVIDIA CUDA runtime |
 | `whisper.compute_type` | Compute precision, default `auto`: int8 on CPU, float16 on CUDA |
+| `whisper.cpu_threads` | CPU load/recognition threads, default 2; keeping this small is more stable after a first-run model download |
+| `whisper.num_workers` | Whisper worker count, default 1; increasing it uses more memory |
 | `whisper.model_download_source` | First-run Whisper model download source for lite packages: `modelscope` for ModelScope China source (default and recommended for mainland China), `huggingface` for the official Hugging Face Hub, or `custom_hf_endpoint` for a custom Hugging Face Endpoint |
 | `whisper.model_download_endpoint` | Hugging Face-compatible endpoint used only when `model_download_source` is `custom_hf_endpoint`; ModelScope is not a Hugging Face endpoint and should not be entered here |
-| `whisper.language` | Fixed recognition language, synchronized with the left title-bar language dropdown |
+| `whisper.language` | Fixed recognition language, synchronized with the left title-bar language dropdown; currently `en` / `zh` |
 | `whisper.prompt_profile` | Recognition prompt profile, default `none` to avoid Whisper hallucinating the prompt; optionally use `general` or `game` manually |
 | `whisper.vad_filter` | faster-whisper internal VAD, disabled by default to avoid double-cutting speech |
 | `overlay.text_color` | Overlay text color |
@@ -194,14 +219,17 @@ Edit `config.json` or use the overlay settings:
 | `translation.endpoint` | OpenAI-compatible endpoint or `/v1` base URL; unused in Google mode |
 | `translation.max_tokens` | Maximum translation output length, default 80 to avoid expansion |
 | `translation.temperature` | Translation randomness, default 0 for faithful and stable subtitles |
-| `translation.source_lang` | Fixed recognition language saved from the left title-bar dropdown |
-| `translation.target_lang` | Fixed translation target saved from the right title-bar dropdown |
+| `translation.source_lang` | Fixed recognition language saved from the left title-bar dropdown; currently `en` / `zh` |
+| `translation.target_lang` | Fixed translation target saved from the right title-bar dropdown; currently `en` / `zh` |
 | `translation.context_messages` | Translation history context count, default 0 to avoid stale context pollution and completion |
+| `translation.timeout_seconds` | Single translation request timeout, default 12 seconds; increase it if your provider is slow |
+| `translation.max_concurrent_requests` | Concurrent translation requests, default 2; lower is steadier, higher can make slow providers time out more easily |
 
 ## Troubleshooting
 
 ### Cannot Capture Audio
 - Choose `[System Audio]` / `Loopback`, not a normal microphone.
+- First click "Test Audio" in the wizard or gear settings, play game/Discord/video sound, and check whether the level bar moves.
 - Run `python list_devices.py` and confirm that system-audio devices are visible.
 - Make sure the game sound is playing through the same speaker/headphone device you selected.
 - If you use Bluetooth, HDMI, or a USB sound card, choose the matching system-audio/loopback item.
@@ -212,6 +240,7 @@ Edit `config.json` or use the overlay settings:
 
 ### Translation Fails
 - Check the overlay message for API status code and provider error details.
+- Use "Test API Key" in the wizard or gear settings to verify the Key, model, and endpoint before entering a game.
 - Confirm API Key, model name, and endpoint in the gear settings.
 - If using a local model, make sure the endpoint is reachable and compatible with Chat Completions.
 - Increase `translation.timeout_seconds` if the provider is slow.
@@ -238,6 +267,12 @@ Edit `config.json` or use the overlay settings:
 - `hf-mirror.com` currently redirects back to `huggingface.co`, so it is unreliable when the user's network cannot reach Hugging Face. If you still want to try it, enter it only as a custom Hugging Face Endpoint.
 - If ModelScope or a custom source still fails, switch to the official Hugging Face source and restart, or use the full package.
 - The full package already includes the Whisper small model and does not need the first-run model download.
+
+### Translation Latency Is High
+- Enable debug mode in the gear settings, reproduce once, then use "Submit Feedback" to copy the latest latency data.
+- Check network connectivity and provider speed.
+- Lower `whisper.model_size` to speed up recognition.
+- Use a local translation model if you already have one deployed.
 
 ## Scope
 This tool captures Windows system playback audio. It is not hard-coded for specific games and should not claim individual game compatibility without testing. If the game voice is audible through the selected playback device and Windows exposes a matching system-audio/loopback capture device, it can usually be tried.

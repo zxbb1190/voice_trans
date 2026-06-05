@@ -4,6 +4,7 @@
 """
 
 import queue
+import threading
 import time
 import wave
 from dataclasses import dataclass
@@ -111,6 +112,100 @@ def list_input_devices():
     finally:
         audio.terminate()
     return devices
+
+
+class AudioLevelMonitor:
+    """Lightweight live level monitor for setup and diagnostics."""
+
+    def __init__(self, config: AudioConfig = None, on_level: Optional[Callable[[dict], None]] = None):
+        self.config = config or AudioConfig()
+        self._on_level = on_level
+        self._selector: Optional[SystemAudioCapture] = None
+        self._stream: Optional[pyaudio.Stream] = None
+        self._thread: Optional[threading.Thread] = None
+        self._running = False
+        self._stream_channels = 1
+        self._sample_rate = self.config.sample_rate
+        self.selected_device = None
+        self.peak_dbfs = -120.0
+
+    def start(self):
+        if self._running:
+            return
+        self._selector = SystemAudioCapture(self.config)
+        device_index = self._selector.find_loopback_device()
+        if device_index is None:
+            raise RuntimeError("未找到可用的音频输入设备")
+
+        self._stream_channels = self._selector._stream_channels
+        self._sample_rate = self._selector._capture_sample_rate
+        self.selected_device = self._selector.selected_device
+        frames_per_buffer = max(256, int(self._sample_rate * 0.05))
+        self._stream = self._selector._audio.open(
+            format=self.config.format,
+            channels=self._stream_channels,
+            rate=self._sample_rate,
+            input=True,
+            input_device_index=device_index,
+            frames_per_buffer=frames_per_buffer,
+        )
+        self._running = True
+        self._thread = threading.Thread(target=self._read_loop, name="audio-level-monitor", daemon=True)
+        self._thread.start()
+        logger.info("音频测试已启动: {}Hz/{}ch", self._sample_rate, self._stream_channels)
+
+    def stop(self):
+        self._running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.5)
+        self._thread = None
+        if self._stream:
+            try:
+                self._stream.stop_stream()
+            except Exception:
+                pass
+            try:
+                self._stream.close()
+            except Exception:
+                pass
+            self._stream = None
+        if self._selector:
+            try:
+                self._selector._audio.terminate()
+            except Exception:
+                pass
+            self._selector = None
+        logger.info("音频测试已停止")
+
+    def _read_loop(self):
+        frames_per_buffer = max(256, int(self._sample_rate * 0.05))
+        while self._running and self._stream:
+            try:
+                data = self._stream.read(frames_per_buffer, exception_on_overflow=False)
+                samples = np.frombuffer(data, dtype=np.int16)
+                if self._stream_channels > 1:
+                    try:
+                        samples = samples.reshape(-1, self._stream_channels).mean(axis=1).astype(np.int16)
+                    except ValueError:
+                        pass
+                rms = calculate_rms_dbfs(samples)
+                self.peak_dbfs = max(self.peak_dbfs, rms)
+                detected = rms > float(getattr(self.config, "silence_threshold", -40.0) or -40.0)
+                payload = {
+                    "rms_dbfs": rms,
+                    "peak_dbfs": self.peak_dbfs,
+                    "detected": detected,
+                    "sample_rate": self._sample_rate,
+                    "channels": self._stream_channels,
+                    "device": self.selected_device,
+                }
+                if self._on_level:
+                    self._on_level(payload)
+            except Exception as e:
+                if self._running and self._on_level:
+                    self._on_level({"error": str(e), "device": self.selected_device})
+                break
+        self._running = False
 
 
 class SystemAudioCapture:

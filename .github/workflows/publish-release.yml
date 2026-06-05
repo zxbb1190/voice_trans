@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version, for example 0.1.6"
+        description: "Release version, for example 0.2.0"
         required: true
-        default: "0.1.6"
+        default: "0.2.0"
 
 permissions:
   contents: write
@@ -71,9 +71,9 @@ jobs:
           @"
           ## VoxGo $env:APP_VERSION
 
-          - Rebranded the Windows app, desktop icon, executable, installer metadata, portable packages, docs, and website links to VoxGo.
-          - Updated the GitHub repository links to ``zxbb1190/VoxGo_game_voice_trans`` and the official website to ``https://voxgo.cn/``.
-          - Kept ModelScope as the default lite-package Whisper model source for mainland China users.
+          - Added a first-run setup wizard that saves ``setup_completed`` and starts model loading only after setup is accepted.
+          - Added real translation API testing, live audio level testing, debug latency tracing, and a built-in feedback diagnostic template.
+          - Updated README and website copy around the player setup loop: download, test API Key, test system audio, enter game, then report diagnostics if blocked.
 
           ### Downloads
 

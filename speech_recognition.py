@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import gc
 import inspect
 import json
 import os
@@ -106,6 +107,8 @@ class WhisperConfig:
     model_size: str = "small"
     device: str = "cpu"
     compute_type: str = "auto"
+    cpu_threads: int = 2
+    num_workers: int = 1
     language: str = "auto"
     beam_size: int = 5
     vad_filter: bool = False
@@ -174,37 +177,63 @@ class SpeechRecognizer:
 
         self._model_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_model_downloaded()
+        self._release_model_loader_memory()
         last_error = None
         for device, compute_type in self._model_load_candidates():
-            logger.info(
-                "加载 Whisper 模型: {} (device={}, compute_type={})",
-                self.config.model_size,
-                device,
-                compute_type
-            )
-            try:
-                self._model = WhisperModel(
-                    self._model_path or self.config.model_size,
-                    device=device,
-                    compute_type=compute_type,
-                    download_root=str(self._model_dir),
-                    local_files_only=self.config.local_files_only
-                )
-                self.config.device = device
-                self.config.compute_type = compute_type
-                self._initialized = True
-                logger.info("Whisper 模型加载完成")
-                return
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    "加载 Whisper 模型失败，将尝试下一个设备配置: device={}, compute_type={}, error={}",
+            runtime_options = self._model_runtime_options(device)
+            max_attempts = 2 if device == "cpu" else 1
+            for attempt in range(1, max_attempts + 1):
+                logger.info(
+                    "加载 Whisper 模型: {} (device={}, compute_type={}, cpu_threads={}, num_workers={}, attempt={}/{})",
+                    self.config.model_size,
                     device,
                     compute_type,
-                    e,
+                    runtime_options.get("cpu_threads", "-"),
+                    runtime_options.get("num_workers", "-"),
+                    attempt,
+                    max_attempts,
                 )
+                try:
+                    self._model = WhisperModel(
+                        self._model_path or self.config.model_size,
+                        device=device,
+                        compute_type=compute_type,
+                        download_root=str(self._model_dir),
+                        local_files_only=self.config.local_files_only,
+                        **runtime_options,
+                    )
+                    self.config.device = device
+                    self.config.compute_type = compute_type
+                    self._initialized = True
+                    logger.info("Whisper 模型加载完成")
+                    return
+                except Exception as e:
+                    last_error = e
+                    self._release_model_loader_memory()
+                    if attempt < max_attempts and self._is_memory_allocation_error(e):
+                        logger.warning(
+                            "Whisper 模型加载遇到内存分配失败，已清理内存并准备重试: {}",
+                            e,
+                        )
+                        time.sleep(0.8)
+                        continue
+                    logger.warning(
+                        "加载 Whisper 模型失败，将尝试下一个设备配置: device={}, compute_type={}, error={}",
+                        device,
+                        compute_type,
+                        e,
+                    )
+                    break
 
         raise RuntimeError("Whisper 模型加载失败，没有可用的设备配置") from last_error
+
+    def _release_model_loader_memory(self):
+        self._model = None
+        gc.collect()
+
+    def _is_memory_allocation_error(self, error: Exception) -> bool:
+        text = str(error).lower()
+        return "mkl_malloc" in text or "failed to allocate memory" in text or "bad allocation" in text
 
     def _ensure_model_downloaded(self):
         if self.config.local_files_only:
@@ -576,6 +605,14 @@ class SpeechRecognizer:
         if configured in ("", "auto", "default"):
             return "float16" if device == "cuda" else "int8"
         return configured
+
+    def _model_runtime_options(self, device: str) -> dict:
+        cpu_threads = max(1, min(4, int(getattr(self.config, "cpu_threads", 2) or 2)))
+        num_workers = max(1, min(2, int(getattr(self.config, "num_workers", 1) or 1)))
+        options = {"num_workers": num_workers}
+        if device == "cpu":
+            options["cpu_threads"] = cpu_threads
+        return options
 
     def _initial_prompt(self) -> Optional[str]:
         custom_prompt = (self.config.initial_prompt or "").strip()

@@ -1,4 +1,7 @@
 {
+  "app": {
+    "setup_completed": false
+  },
   "audio": {
     "sample_rate": 44100,
     "channels": 1,
@@ -22,6 +25,8 @@
     "model_size": "small",
     "device": "cpu",
     "compute_type": "auto",
+    "cpu_threads": 2,
+    "num_workers": 1,
     "model_download_source": "modelscope",
     "model_download_endpoint": "",
     "language": "en",
@@ -49,7 +54,8 @@
     "source_lang": "en",
     "target_lang": "zh",
     "context_messages": 0,
-    "timeout_seconds": 8
+    "timeout_seconds": 12,
+    "max_concurrent_requests": 2
   },
   "overlay": {
     "font_size": 16,
@@ -79,6 +85,7 @@
     "clear_history": "ctrl+alt+c"
   },
   "debug": {
+    "enabled": false,
     "log_level": "INFO",
     "save_audio_chunks": false,
     "save_transcripts": false

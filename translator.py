@@ -27,7 +27,8 @@ class TranslationConfig:
     source_lang: str = "en"
     target_lang: str = "zh"
     context_messages: int = 0
-    timeout_seconds: float = 8.0
+    timeout_seconds: float = 12.0
+    max_concurrent_requests: int = 2
 
 
 SYSTEM_PROMPT = """你是实时语音字幕翻译器。输入来自语音识别，可能有错字、断句和不完整内容。
@@ -96,6 +97,9 @@ class GameTranslator:
         self.config = config or TranslationConfig()
         self._context: List[dict] = []
         self._session: Optional[aiohttp.ClientSession] = None
+        self._request_semaphore: Optional[asyncio.Semaphore] = None
+        self._request_semaphore_limit = 0
+        self._request_semaphore_loop = None
         self._translation_count = 0
         self._total_time = 0
 
@@ -156,6 +160,26 @@ class GameTranslator:
     def _provider(self) -> str:
         return normalize_translation_provider(getattr(self.config, "provider", "openai_compatible"))
 
+    def _max_concurrent_requests(self) -> int:
+        try:
+            value = int(getattr(self.config, "max_concurrent_requests", 2) or 2)
+        except Exception:
+            value = 2
+        return max(1, min(4, value))
+
+    def _translation_semaphore(self) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        limit = self._max_concurrent_requests()
+        if (
+            self._request_semaphore is None
+            or self._request_semaphore_limit != limit
+            or self._request_semaphore_loop is not loop
+        ):
+            self._request_semaphore = asyncio.Semaphore(limit)
+            self._request_semaphore_limit = limit
+            self._request_semaphore_loop = loop
+        return self._request_semaphore
+
     def _api_key_missing_message(self) -> str:
         if self._provider() == "google":
             return "[未翻译] API Key 未配置，请在设置里填写 Google Cloud Translation API Key"
@@ -199,10 +223,11 @@ class GameTranslator:
 
         source_language = self.detect_language(text, detected_language)
         target_language = self.get_target_language(source_language)
-        if self._provider() == "google":
-            return await self._translate_google(text, source_language, target_language)
+        async with self._translation_semaphore():
+            if self._provider() == "google":
+                return await self._translate_google(text, source_language, target_language)
 
-        return await self._translate_openai_compatible(text, source_language, target_language)
+            return await self._translate_openai_compatible(text, source_language, target_language)
 
     async def _translate_openai_compatible(self, text: str, source_language: str, target_language: str) -> str:
         """Translate with an OpenAI-compatible Chat Completions endpoint."""

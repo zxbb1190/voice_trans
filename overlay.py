@@ -4,8 +4,11 @@
 """
 
 import ctypes
+import asyncio
+import platform
 import socket
 import sys
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -21,12 +24,14 @@ from PyQt5.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout,
     QApplication, QPushButton, QFrame, QDialog, QFormLayout,
     QSlider, QCheckBox, QLineEdit, QColorDialog, QToolButton, QComboBox,
-    QSpinBox, QSizePolicy, QScrollArea
+    QSpinBox, QSizePolicy, QScrollArea, QProgressBar, QPlainTextEdit,
+    QStackedWidget
 )
 
-from app_info import APP_NAME
+from app_info import APP_NAME, APP_VERSION
+from audio_capture import AudioConfig, AudioLevelMonitor
 from qr_widget import QrCodeWidget
-from translator import TranslationConfig, TRANSLATION_PROVIDERS, normalize_translation_provider
+from translator import GameTranslator, TranslationConfig, TRANSLATION_PROVIDERS, normalize_translation_provider
 
 
 LANGUAGE_OPTIONS = (("en", "英语"), ("zh", "中文"))
@@ -170,6 +175,610 @@ class WhisperDeviceConfig:
     device: str = "cpu"
     model_download_source: str = "modelscope"
     model_download_endpoint: str = ""
+
+
+@dataclass
+class RuntimeConfig:
+    setup_completed: bool = False
+
+
+@dataclass
+class DebugConfig:
+    enabled: bool = False
+    log_level: str = "INFO"
+    save_audio_chunks: bool = False
+    save_transcripts: bool = False
+
+
+def _copy_translation_config(config: TranslationConfig) -> TranslationConfig:
+    return TranslationConfig(
+        provider=normalize_translation_provider(getattr(config, "provider", "openai_compatible")),
+        api_key=getattr(config, "api_key", ""),
+        model=getattr(config, "model", TranslationConfig.model),
+        endpoint=getattr(config, "endpoint", TranslationConfig.endpoint),
+        max_tokens=getattr(config, "max_tokens", 80),
+        temperature=getattr(config, "temperature", 0.0),
+        source_lang=getattr(config, "source_lang", "en"),
+        target_lang=getattr(config, "target_lang", "zh"),
+        context_messages=getattr(config, "context_messages", 0),
+        timeout_seconds=getattr(config, "timeout_seconds", TranslationConfig.timeout_seconds),
+        max_concurrent_requests=getattr(
+            config,
+            "max_concurrent_requests",
+            TranslationConfig.max_concurrent_requests,
+        ),
+    )
+
+
+def _copy_audio_config(config) -> AudioConfig:
+    audio_config = AudioConfig()
+    for key, value in getattr(config, "__dict__", {}).items():
+        if hasattr(audio_config, key):
+            setattr(audio_config, key, value)
+    return audio_config
+
+
+def _device_label(device: Optional[dict]) -> str:
+    if not device:
+        return "自动选择"
+    device_type = "系统声音" if device.get("is_loopback") else "输入设备"
+    return (
+        f"[{device_type}] [{device.get('index')}] {device.get('name', '')} "
+        f"({device.get('sample_rate') or 0}Hz/{device.get('channels') or 0}ch)"
+    )
+
+
+def _build_feedback_report(
+    translation_config: TranslationConfig,
+    whisper_config,
+    debug_config: DebugConfig,
+    app_version: str,
+    runtime_dir: str,
+    last_latency_summary: Optional[dict],
+    selected_audio_device: str,
+) -> str:
+    provider = normalize_translation_provider(getattr(translation_config, "provider", "openai_compatible"))
+    provider_label = TRANSLATION_PROVIDERS.get(provider, provider)
+    latency = last_latency_summary or {}
+    log_dir = runtime_dir or "."
+    return "\n".join([
+        "## VoxGo 反馈",
+        "",
+        "### 基本信息",
+        f"- VoxGo 版本：{app_version or APP_VERSION}",
+        "- 包类型：Lite / Full（请保留实际使用的一项）",
+        f"- Windows 版本：{platform.platform()}",
+        "- 游戏名：",
+        "- 是否使用蓝牙耳机：是 / 否",
+        "",
+        "### 当前配置",
+        f"- 音频设备：{selected_audio_device or '自动选择'}",
+        f"- 翻译服务：{provider_label}",
+        f"- 模型名：{getattr(translation_config, 'model', '')}",
+        f"- 兼容地址：{getattr(translation_config, 'endpoint', '')}",
+        f"- 识别设备：{WHISPER_DEVICE_LABELS.get(_normalize_whisper_device(getattr(whisper_config, 'device', 'cpu')), 'CPU')}",
+        f"- 调试模式：{'开启' if getattr(debug_config, 'enabled', False) else '关闭'}",
+        "",
+        "### 最近一次延迟",
+        f"- 队列等待：{latency.get('wait_ms', 0)} ms",
+        f"- 识别耗时：{latency.get('recognition_ms', 0)} ms",
+        f"- 翻译耗时：{latency.get('translation_ms', 0)} ms",
+        f"- 浮窗更新：{latency.get('overlay_ms', 0)} ms",
+        f"- 总延迟：{latency.get('total_ms', 0)} ms",
+        "",
+        "### 日志文件",
+        f"- app.log：{log_dir}/app.log",
+        f"- crash_report.txt：{log_dir}/crash_report.txt",
+        "",
+        "### 问题类型",
+        "- 启动失败 / 无声音 / 有声音无字幕 / 识别不准 / 翻译慢 / 手机同步失败 / 其他",
+        "",
+        "### 复现步骤",
+        "1. ",
+        "2. ",
+        "3. ",
+        "",
+        "### 期望结果",
+        "",
+        "### 实际结果",
+    ])
+
+
+class TranslationTestSignals(QObject):
+    finished = pyqtSignal(bool, str)
+
+
+class TranslationTestRunner:
+    def __init__(self, config: TranslationConfig, callback: Callable[[bool, str], None]):
+        self.signals = TranslationTestSignals()
+        self.signals.finished.connect(callback)
+        self._config = _copy_translation_config(config)
+
+    def start(self):
+        threading.Thread(target=self._run, name="translation-test", daemon=True).start()
+
+    def _run(self):
+        started_at = time.time()
+        translator = GameTranslator(self._config)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            translated = loop.run_until_complete(
+                translator.translate("Hello, can you hear me?", "en")
+            )
+            elapsed_ms = int(round((time.time() - started_at) * 1000))
+            translated = (translated or "").strip()
+            if not translated:
+                self.signals.finished.emit(False, "翻译接口返回空结果")
+            elif translated.startswith("[翻译") or translated.startswith("[未翻译]"):
+                self.signals.finished.emit(False, translated)
+            else:
+                self.signals.finished.emit(True, f"测试成功：{translated}\n耗时：{elapsed_ms} ms")
+        except Exception as e:
+            self.signals.finished.emit(False, f"测试失败：{str(e)[:220]}")
+        finally:
+            try:
+                loop.run_until_complete(translator.close())
+            except Exception:
+                pass
+            loop.close()
+
+
+class AudioTestSignals(QObject):
+    level = pyqtSignal(dict)
+
+
+class AudioTestPanel(QWidget):
+    def __init__(self, get_audio_config: Callable[[], AudioConfig], parent=None):
+        super().__init__(parent)
+        self._get_audio_config = get_audio_config
+        self._monitor: Optional[AudioLevelMonitor] = None
+        self._signals = AudioTestSignals()
+        self._signals.level.connect(self._handle_level_update)
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        button_row = QHBoxLayout()
+        self.start_button = QPushButton("测试音频")
+        self.stop_button = QPushButton("停止")
+        self.stop_button.setEnabled(False)
+        self.start_button.clicked.connect(self.start_test)
+        self.stop_button.clicked.connect(self.stop_test)
+        button_row.addWidget(self.start_button)
+        button_row.addWidget(self.stop_button)
+        button_row.addStretch()
+
+        self.device_label = QLabel("当前设备：未测试")
+        self.level_bar = QProgressBar()
+        self.level_bar.setRange(0, 100)
+        self.level_bar.setValue(0)
+        self.status_label = QLabel("播放游戏、Discord 或视频声音后，音量条应该跳动。")
+        self.status_label.setWordWrap(True)
+
+        layout.addLayout(button_row)
+        layout.addWidget(self.device_label)
+        layout.addWidget(self.level_bar)
+        layout.addWidget(self.status_label)
+        self.setLayout(layout)
+
+    def start_test(self):
+        self.stop_test()
+        self.level_bar.setValue(0)
+        self.status_label.setText("正在打开音频设备...")
+        self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        try:
+            config = _copy_audio_config(self._get_audio_config())
+            self._monitor = AudioLevelMonitor(config, self._signals.level.emit)
+            self._monitor.start()
+            self.status_label.setText("正在监听声音，播放游戏/视频/Discord 后观察音量条。")
+        except Exception as e:
+            self._monitor = None
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.status_label.setText(f"音频测试失败：{str(e)[:220]}")
+
+    def stop_test(self):
+        if self._monitor:
+            self._monitor.stop()
+            self._monitor = None
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+
+    def _handle_level_update(self, payload: dict):
+        if payload.get("error"):
+            self.status_label.setText(f"音频读取失败：{payload.get('error')}")
+            self.stop_test()
+            return
+        rms = float(payload.get("rms_dbfs", -120.0))
+        peak = float(payload.get("peak_dbfs", -120.0))
+        detected = bool(payload.get("detected"))
+        value = int(max(0, min(100, (rms + 70.0) / 70.0 * 100.0)))
+        self.level_bar.setValue(value)
+        device = payload.get("device") or {}
+        if device:
+            self.device_label.setText(
+                f"当前设备：{device.get('type', '音频')} [{device.get('index')}] "
+                f"{device.get('name', '')} ({device.get('sample_rate')}Hz/{device.get('channels')}ch)"
+            )
+        state = "检测到声音" if detected else "暂未检测到明显声音"
+        self.status_label.setText(f"{state}。当前 {rms:.1f} dBFS，峰值 {peak:.1f} dBFS。")
+
+    def close(self):
+        self.stop_test()
+        super().close()
+
+
+class FeedbackDialog(QDialog):
+    def __init__(self, report_text: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("提交反馈")
+        self.setWindowFlags(self.windowFlags() | Qt.Tool)
+        layout = QVBoxLayout()
+        label = QLabel("复制下面的诊断模板，到 GitHub Issue 里补充问题描述。")
+        label.setWordWrap(True)
+        self.text = QPlainTextEdit(report_text)
+        self.text.setMinimumSize(640, 360)
+        button_row = QHBoxLayout()
+        copy_button = QPushButton("复制模板")
+        open_button = QPushButton("打开 Issue")
+        close_button = QPushButton("关闭")
+        copy_button.clicked.connect(self._copy)
+        open_button.clicked.connect(self._open_issue)
+        close_button.clicked.connect(self.close)
+        button_row.addWidget(copy_button)
+        button_row.addWidget(open_button)
+        button_row.addStretch()
+        button_row.addWidget(close_button)
+        layout.addWidget(label)
+        layout.addWidget(self.text)
+        layout.addLayout(button_row)
+        self.setLayout(layout)
+
+    def _copy(self):
+        QApplication.clipboard().setText(self.text.toPlainText())
+
+    def _open_issue(self):
+        import webbrowser
+        webbrowser.open("https://github.com/zxbb1190/VoxGo_game_voice_trans/issues/new")
+
+
+class FirstRunWizard(QDialog):
+    """First-run setup flow before the backend starts loading models."""
+
+    setup_completed = pyqtSignal()
+
+    def __init__(
+        self,
+        audio_config: AudioDeviceConfig,
+        translation_config: TranslationConfig,
+        audio_devices: Optional[List[dict]] = None,
+        whisper_config=None,
+        app_config: RuntimeConfig = None,
+        debug_config: DebugConfig = None,
+        app_version: str = "",
+        runtime_dir: str = "",
+        get_last_latency_summary: Optional[Callable[[], dict]] = None,
+        on_audio_devices_refresh: Optional[Callable[[], List[dict]]] = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("VoxGo 首次启动向导")
+        self.setWindowFlags(self.windowFlags() | Qt.Tool)
+        self.audio_config = audio_config or AudioDeviceConfig()
+        self.translation_config = translation_config or TranslationConfig()
+        self.audio_devices = audio_devices or []
+        self.whisper_config = whisper_config or WhisperDeviceConfig()
+        self.app_config = app_config or RuntimeConfig()
+        self.debug_config = debug_config or DebugConfig()
+        self.app_version = app_version or APP_VERSION
+        self.runtime_dir = runtime_dir
+        self._get_last_latency_summary = get_last_latency_summary
+        self._on_audio_devices_refresh = on_audio_devices_refresh
+        self._translation_test_runner = None
+        self._feedback_dialog = None
+        self._completed = False
+        self._init_ui()
+
+    def _init_ui(self):
+        root = QVBoxLayout()
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self._build_translation_page())
+        self.stack.addWidget(self._build_audio_page())
+        self.stack.addWidget(self._build_finish_page())
+        self.stack.currentChanged.connect(self._refresh_buttons)
+
+        nav_row = QHBoxLayout()
+        self.skip_button = QPushButton("稍后设置并启动")
+        self.back_button = QPushButton("上一步")
+        self.next_button = QPushButton("下一步")
+        self.finish_button = QPushButton("完成并启动")
+        self.skip_button.clicked.connect(self._complete_setup)
+        self.back_button.clicked.connect(self._go_back)
+        self.next_button.clicked.connect(self._go_next)
+        self.finish_button.clicked.connect(self._complete_setup)
+        nav_row.addWidget(self.skip_button)
+        nav_row.addStretch()
+        nav_row.addWidget(self.back_button)
+        nav_row.addWidget(self.next_button)
+        nav_row.addWidget(self.finish_button)
+
+        root.addWidget(self.stack)
+        root.addLayout(nav_row)
+        self.setLayout(root)
+        self.resize(760, 560)
+        self._refresh_buttons()
+
+    def _build_translation_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout()
+        title = QLabel("先确认翻译接口")
+        title.setObjectName("wizardTitle")
+        title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        note = QLabel("填写你准备用来翻译游戏语音的服务。测试成功后再进入游戏，少走一圈弯路。")
+        note.setWordWrap(True)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight)
+        self.wizard_provider_combo = QComboBox()
+        self._fill_wizard_translation_providers()
+        self.wizard_provider_combo.currentIndexChanged.connect(self._wizard_provider_changed)
+        form.addRow("翻译服务", self.wizard_provider_combo)
+
+        self.wizard_api_key_input = QLineEdit(self.translation_config.api_key)
+        self.wizard_api_key_input.setEchoMode(QLineEdit.Password)
+        form.addRow("API Key", self.wizard_api_key_input)
+
+        self.wizard_model_input = QLineEdit(self.translation_config.model)
+        self.wizard_model_input.setPlaceholderText("tencent/Hunyuan-MT-7B")
+        form.addRow("模型名", self.wizard_model_input)
+
+        self.wizard_endpoint_input = QLineEdit(self.translation_config.endpoint)
+        self.wizard_endpoint_input.setPlaceholderText("https://api.siliconflow.cn/v1/chat/completions")
+        form.addRow("兼容地址", self.wizard_endpoint_input)
+
+        test_row = QHBoxLayout()
+        self.wizard_translation_test_button = QPushButton("测试 API Key")
+        self.wizard_translation_test_label = QLabel("会发送一句测试文本，确认 API Key、模型名和地址可用。")
+        self.wizard_translation_test_label.setWordWrap(True)
+        self.wizard_translation_test_button.clicked.connect(self._test_translation)
+        test_row.addWidget(self.wizard_translation_test_button)
+        test_row.addWidget(self.wizard_translation_test_label, 1)
+        form.addRow("接口测试", test_row)
+
+        layout.addWidget(title)
+        layout.addWidget(note)
+        layout.addSpacing(10)
+        layout.addLayout(form)
+        layout.addStretch()
+        page.setLayout(layout)
+        self._refresh_wizard_translation_provider_ui()
+        return page
+
+    def _build_audio_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout()
+        title = QLabel("再确认能听到游戏声音")
+        title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        note = QLabel("优先选择和你正在用的耳机、扬声器、HDMI 或 USB 声卡同名的 [系统声音] / Loopback 设备。普通麦克风通常录不到游戏声音。")
+        note.setWordWrap(True)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight)
+        audio_row = QHBoxLayout()
+        self.wizard_audio_device_combo = QComboBox()
+        self.wizard_refresh_audio_button = QPushButton("刷新")
+        self._fill_wizard_audio_devices()
+        self.wizard_refresh_audio_button.clicked.connect(self._refresh_wizard_audio_devices)
+        audio_row.addWidget(self.wizard_audio_device_combo)
+        audio_row.addWidget(self.wizard_refresh_audio_button)
+        form.addRow("音频设备", audio_row)
+
+        self.wizard_audio_test_panel = AudioTestPanel(self._current_audio_config, self)
+        form.addRow("音频测试", self.wizard_audio_test_panel)
+
+        layout.addWidget(title)
+        layout.addWidget(note)
+        layout.addSpacing(10)
+        layout.addLayout(form)
+        layout.addStretch()
+        page.setLayout(layout)
+        return page
+
+    def _build_finish_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout()
+        title = QLabel("准备启动实时翻译")
+        title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        note = QLabel("完成后会保存首次设置状态，并开始加载 Whisper。Lite 包首次加载模型可能需要等待。")
+        note.setWordWrap(True)
+        self.wizard_debug_check = QCheckBox("开启调试模式，记录最近一次识别、翻译和浮窗更新延迟")
+        self.wizard_debug_check.setChecked(bool(getattr(self.debug_config, "enabled", False)))
+        self.wizard_summary_label = QLabel()
+        self.wizard_summary_label.setWordWrap(True)
+        feedback_button = QPushButton("生成反馈模板")
+        feedback_button.clicked.connect(self._open_feedback_dialog)
+
+        layout.addWidget(title)
+        layout.addWidget(note)
+        layout.addSpacing(10)
+        layout.addWidget(self.wizard_debug_check)
+        layout.addWidget(self.wizard_summary_label)
+        layout.addWidget(feedback_button, 0, Qt.AlignLeft)
+        layout.addStretch()
+        page.setLayout(layout)
+        return page
+
+    def _fill_wizard_translation_providers(self):
+        self.wizard_provider_combo.blockSignals(True)
+        self.wizard_provider_combo.clear()
+        selected_provider = normalize_translation_provider(
+            getattr(self.translation_config, "provider", "openai_compatible")
+        )
+        selected_row = 0
+        for row, (provider, label) in enumerate(TRANSLATION_PROVIDERS.items()):
+            self.wizard_provider_combo.addItem(label, provider)
+            if provider == selected_provider:
+                selected_row = row
+        self.wizard_provider_combo.setCurrentIndex(selected_row)
+        self.wizard_provider_combo.blockSignals(False)
+
+    def _wizard_provider_changed(self, *args):
+        self._refresh_wizard_translation_provider_ui()
+
+    def _refresh_wizard_translation_provider_ui(self):
+        provider = normalize_translation_provider(self.wizard_provider_combo.currentData())
+        is_google = provider == "google"
+        self.wizard_api_key_input.setPlaceholderText(
+            "Google Cloud Translation API Key" if is_google else "OpenAI 兼容 API Key"
+        )
+        self.wizard_model_input.setEnabled(not is_google)
+        self.wizard_endpoint_input.setEnabled(not is_google)
+
+    def _fill_wizard_audio_devices(self):
+        self.wizard_audio_device_combo.blockSignals(True)
+        self.wizard_audio_device_combo.clear()
+        self.wizard_audio_device_combo.addItem("自动选择", None)
+        selected_row = 0
+        selected_index = getattr(self.audio_config, "input_device_index", None)
+        selected_name = (getattr(self.audio_config, "input_device_name", "") or "").strip()
+        selected_device_id = (getattr(self.audio_config, "input_device_id", "") or "").strip()
+        for row, device in enumerate(self.audio_devices, start=1):
+            self.wizard_audio_device_combo.addItem(_device_label(device), device)
+            index = device.get("index")
+            name = device.get("name", "")
+            device_id = (device.get("device_id") or "").strip()
+            if selected_device_id and selected_device_id == device_id:
+                selected_row = row
+            elif selected_row == 0 and selected_name and selected_name == name:
+                selected_row = row
+            elif selected_row == 0 and not selected_name and selected_index is not None and int(selected_index) == int(index):
+                selected_row = row
+        self.wizard_audio_device_combo.setCurrentIndex(selected_row)
+        self.wizard_audio_device_combo.blockSignals(False)
+
+    def _refresh_wizard_audio_devices(self):
+        if self._on_audio_devices_refresh:
+            self.audio_devices = self._on_audio_devices_refresh() or []
+        self._fill_wizard_audio_devices()
+
+    def _current_audio_config(self) -> AudioConfig:
+        self._collect_audio_values()
+        return _copy_audio_config(self.audio_config)
+
+    def _collect_translation_values(self):
+        self.translation_config.provider = normalize_translation_provider(self.wizard_provider_combo.currentData())
+        self.translation_config.api_key = self.wizard_api_key_input.text().strip()
+        if self.translation_config.provider != "google":
+            self.translation_config.model = self.wizard_model_input.text().strip() or self.translation_config.model
+            self.translation_config.endpoint = self.wizard_endpoint_input.text().strip() or self.translation_config.endpoint
+
+    def _collect_audio_values(self):
+        device = self.wizard_audio_device_combo.currentData()
+        if device:
+            self.audio_config.input_device_index = int(device.get("index"))
+            self.audio_config.input_device_name = device.get("name", "")
+            self.audio_config.input_device_id = device.get("device_id", "")
+        else:
+            self.audio_config.input_device_index = None
+            self.audio_config.input_device_name = ""
+            self.audio_config.input_device_id = ""
+
+    def _collect_values(self):
+        self._collect_translation_values()
+        self._collect_audio_values()
+        self.debug_config.enabled = self.wizard_debug_check.isChecked()
+
+    def _test_translation(self):
+        self._collect_translation_values()
+        self.wizard_translation_test_button.setEnabled(False)
+        self.wizard_translation_test_label.setText("正在测试翻译接口...")
+        self._translation_test_runner = TranslationTestRunner(
+            self.translation_config,
+            self._handle_translation_test_result,
+        )
+        self._translation_test_runner.start()
+
+    def _handle_translation_test_result(self, ok: bool, message: str):
+        self.wizard_translation_test_button.setEnabled(True)
+        prefix = "成功" if ok else "失败"
+        self.wizard_translation_test_label.setText(f"{prefix}：{message}")
+
+    def _go_back(self):
+        self.stack.setCurrentIndex(max(0, self.stack.currentIndex() - 1))
+
+    def _go_next(self):
+        if self.stack.currentIndex() == 0:
+            self._collect_translation_values()
+        elif self.stack.currentIndex() == 1:
+            self._collect_audio_values()
+            self.wizard_audio_test_panel.stop_test()
+        self.stack.setCurrentIndex(min(self.stack.count() - 1, self.stack.currentIndex() + 1))
+        if self.stack.currentIndex() == self.stack.count() - 1:
+            self._refresh_summary()
+
+    def _refresh_buttons(self):
+        index = self.stack.currentIndex()
+        last_index = self.stack.count() - 1
+        self.back_button.setEnabled(index > 0)
+        self.next_button.setVisible(index < last_index)
+        self.finish_button.setVisible(index == last_index)
+        if index == last_index:
+            self._refresh_summary()
+
+    def _refresh_summary(self):
+        self._collect_values()
+        provider = normalize_translation_provider(getattr(self.translation_config, "provider", "openai_compatible"))
+        provider_label = TRANSLATION_PROVIDERS.get(provider, provider)
+        audio_label = self.wizard_audio_device_combo.currentText() or "自动选择"
+        self.wizard_summary_label.setText(
+            f"翻译服务：{provider_label}\n"
+            f"音频设备：{audio_label}\n"
+            f"调试模式：{'开启' if self.debug_config.enabled else '关闭'}"
+        )
+
+    def _complete_setup(self):
+        self._mark_completed()
+        self.accept()
+
+    def _mark_completed(self):
+        if self._completed:
+            return
+        self._collect_values()
+        if hasattr(self, "wizard_audio_test_panel"):
+            self.wizard_audio_test_panel.stop_test()
+        self.app_config.setup_completed = True
+        self._completed = True
+        self.setup_completed.emit()
+
+    def _open_feedback_dialog(self):
+        self._collect_values()
+        selected_device = self.wizard_audio_device_combo.currentText() if hasattr(self, "wizard_audio_device_combo") else ""
+        latency = self._get_last_latency_summary() if self._get_last_latency_summary else {}
+        self._feedback_dialog = FeedbackDialog(
+            _build_feedback_report(
+                self.translation_config,
+                self.whisper_config,
+                self.debug_config,
+                self.app_version,
+                self.runtime_dir,
+                latency,
+                selected_device,
+            ),
+            self,
+        )
+        self._feedback_dialog.show()
+
+    def closeEvent(self, event):
+        if hasattr(self, "wizard_audio_test_panel"):
+            self.wizard_audio_test_panel.stop_test()
+        if not self._completed:
+            self._mark_completed()
+        super().closeEvent(event)
 
 
 class TranslationItem:
@@ -375,6 +984,11 @@ class SettingsDialog(QDialog):
         translation_config: TranslationConfig = None,
         audio_devices: Optional[List[dict]] = None,
         whisper_config=None,
+        app_config: RuntimeConfig = None,
+        debug_config: DebugConfig = None,
+        app_version: str = "",
+        runtime_dir: str = "",
+        last_latency_summary: Optional[dict] = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -386,6 +1000,13 @@ class SettingsDialog(QDialog):
         self.translation_config = translation_config or TranslationConfig()
         self.audio_devices = audio_devices or []
         self.whisper_config = whisper_config or WhisperDeviceConfig()
+        self.app_config = app_config or RuntimeConfig()
+        self.debug_config = debug_config or DebugConfig()
+        self.app_version = app_version
+        self.runtime_dir = runtime_dir
+        self.last_latency_summary = last_latency_summary or {}
+        self._translation_test_runner = None
+        self._feedback_dialog = None
         self._init_ui()
 
     def _init_ui(self):
@@ -452,6 +1073,15 @@ class SettingsDialog(QDialog):
         self.api_key_input.editingFinished.connect(self._preview)
         form.addRow("API Key", self.api_key_input)
 
+        translation_test_row = QHBoxLayout()
+        self.translation_test_button = QPushButton("测试翻译")
+        self.translation_test_label = QLabel("填写 API Key 后可测试接口是否可用。")
+        self.translation_test_label.setWordWrap(True)
+        self.translation_test_button.clicked.connect(self._test_translation)
+        translation_test_row.addWidget(self.translation_test_button)
+        translation_test_row.addWidget(self.translation_test_label, 1)
+        form.addRow("接口测试", translation_test_row)
+
         self.model_input = QLineEdit(self.translation_config.model)
         self.model_input.setPlaceholderText("tencent/Hunyuan-MT-7B")
         self.model_input.setToolTip("填写服务商要求的模型名，例如 tencent/Hunyuan-MT-7B、deepseek-chat、qwen-plus、glm-4-flash")
@@ -497,6 +1127,9 @@ class SettingsDialog(QDialog):
         self.refresh_audio_button.clicked.connect(self._request_audio_refresh)
         form.addRow("音频设备", audio_row)
 
+        self.audio_test_panel = AudioTestPanel(self._current_audio_config, self)
+        form.addRow("测试音频", self.audio_test_panel)
+
         self.max_speech_seconds_spin = QSpinBox()
         self.max_speech_seconds_spin.setRange(3, 30)
         self.max_speech_seconds_spin.setSuffix(" 秒")
@@ -517,15 +1150,28 @@ class SettingsDialog(QDialog):
         form.addRow("暂停/恢复", self.toggle_translation_input)
         form.addRow("清空历史", self.clear_history_input)
 
+        self.debug_enabled_check = QCheckBox("显示并记录延迟指标")
+        self.debug_enabled_check.setChecked(bool(getattr(self.debug_config, "enabled", False)))
+        self.debug_enabled_check.stateChanged.connect(self._preview)
+        form.addRow("调试模式", self.debug_enabled_check)
+
         layout.addLayout(form)
 
+        action_row = QHBoxLayout()
+        feedback_button = QPushButton("提交反馈")
         close_button = QPushButton("关闭")
+        feedback_button.clicked.connect(self._open_feedback_dialog)
         close_button.clicked.connect(self.close)
-        layout.addWidget(close_button)
+        action_row.addWidget(feedback_button)
+        action_row.addStretch()
+        action_row.addWidget(close_button)
+        layout.addLayout(action_row)
         self.setLayout(layout)
-        self.resize(700, 540)
+        self.resize(760, 680)
 
     def closeEvent(self, event):
+        if hasattr(self, "audio_test_panel"):
+            self.audio_test_panel.stop_test()
         self._preview()
         super().closeEvent(event)
 
@@ -661,6 +1307,42 @@ class SettingsDialog(QDialog):
         if parent and hasattr(parent, "request_audio_device_refresh"):
             parent.request_audio_device_refresh()
 
+    def _current_audio_config(self) -> AudioConfig:
+        self._collect_values()
+        return _copy_audio_config(self.audio_config)
+
+    def _test_translation(self):
+        self._collect_values()
+        self.translation_test_button.setEnabled(False)
+        self.translation_test_label.setText("正在测试翻译接口...")
+        self._translation_test_runner = TranslationTestRunner(
+            self.translation_config,
+            self._handle_translation_test_result,
+        )
+        self._translation_test_runner.start()
+
+    def _handle_translation_test_result(self, ok: bool, message: str):
+        self.translation_test_button.setEnabled(True)
+        prefix = "成功" if ok else "失败"
+        self.translation_test_label.setText(f"{prefix}：{message}")
+
+    def _open_feedback_dialog(self):
+        self._collect_values()
+        self._feedback_dialog = FeedbackDialog(self._build_feedback_report(), self)
+        self._feedback_dialog.show()
+
+    def _build_feedback_report(self) -> str:
+        selected_device = self.audio_device_combo.currentText() if hasattr(self, "audio_device_combo") else ""
+        return _build_feedback_report(
+            self.translation_config,
+            self.whisper_config,
+            self.debug_config,
+            self.app_version,
+            self.runtime_dir,
+            self.last_latency_summary,
+            selected_device,
+        )
+
     def _preview(self, *args):
         self._collect_values()
         self.settings_changed.emit(
@@ -682,6 +1364,7 @@ class SettingsDialog(QDialog):
         self.hotkey_config.toggle_overlay = self.toggle_overlay_input.text().strip() or self.hotkey_config.toggle_overlay
         self.hotkey_config.toggle_translation = self.toggle_translation_input.text().strip() or self.hotkey_config.toggle_translation
         self.hotkey_config.clear_history = self.clear_history_input.text().strip() or self.hotkey_config.clear_history
+        self.debug_config.enabled = self.debug_enabled_check.isChecked()
 
         self.translation_config.provider = normalize_translation_provider(self.provider_combo.currentData())
         self.translation_config.api_key = self.api_key_input.text().strip()
@@ -744,9 +1427,15 @@ class GameOverlay(QWidget):
         translation_config: TranslationConfig = None,
         audio_devices: Optional[List[dict]] = None,
         whisper_config=None,
+        app_config: RuntimeConfig = None,
+        debug_config: DebugConfig = None,
+        app_version: str = "",
+        runtime_dir: str = "",
+        get_last_latency_summary: Optional[Callable[[], dict]] = None,
         on_settings_changed: Optional[Callable[[OverlayConfig, HotkeyConfig, AudioDeviceConfig, TranslationConfig, object], None]] = None,
         on_audio_devices_refresh: Optional[Callable[[], List[dict]]] = None,
         on_shutdown_requested: Optional[Callable[[], None]] = None,
+        on_overlay_updated: Optional[Callable[[str], None]] = None,
     ):
         super().__init__()
         self.config = config or OverlayConfig()
@@ -755,9 +1444,15 @@ class GameOverlay(QWidget):
         self.translation_config = translation_config or TranslationConfig()
         self.audio_devices = audio_devices or []
         self.whisper_config = whisper_config or WhisperDeviceConfig()
+        self.app_config = app_config or RuntimeConfig()
+        self.debug_config = debug_config or DebugConfig()
+        self.app_version = app_version or APP_VERSION
+        self.runtime_dir = runtime_dir
+        self._get_last_latency_summary = get_last_latency_summary
         self._on_settings_changed = on_settings_changed
         self._on_audio_devices_refresh = on_audio_devices_refresh
         self._on_shutdown_requested = on_shutdown_requested
+        self._on_overlay_updated = on_overlay_updated
         self._translations: deque = deque(maxlen=self.config.max_lines)
         self._signals = OverlaySignals()
         self._dragging = False
@@ -767,6 +1462,7 @@ class GameOverlay(QWidget):
         self._resize_start_size = None
         self._syncing_language_controls = False
         self._settings_dialog = None
+        self._first_run_wizard = None
         self._fade_timer = QTimer()
         self._fade_timer.timeout.connect(self._update_fade)
         self._fade_timer.start(100)
@@ -1146,10 +1842,53 @@ class GameOverlay(QWidget):
             self.translation_config,
             self.audio_devices,
             self.whisper_config,
+            self.app_config,
+            self.debug_config,
+            self.app_version,
+            self.runtime_dir,
+            self._current_latency_summary(),
             self,
         )
         self._settings_dialog.settings_changed.connect(self._apply_settings)
         self._settings_dialog.show()
+
+    def show_first_run_wizard(self, on_completed: Optional[Callable[[], None]] = None):
+        if self._first_run_wizard and self._first_run_wizard.isVisible():
+            self._first_run_wizard.raise_()
+            self._first_run_wizard.activateWindow()
+            return
+        self._first_run_wizard = FirstRunWizard(
+            self.audio_config,
+            self.translation_config,
+            self.audio_devices,
+            self.whisper_config,
+            self.app_config,
+            self.debug_config,
+            self.app_version,
+            self.runtime_dir,
+            self._current_latency_summary,
+            self._on_audio_devices_refresh,
+            self,
+        )
+        self._first_run_wizard.setup_completed.connect(
+            lambda: self._handle_first_run_completed(on_completed)
+        )
+        self._first_run_wizard.show()
+        self._first_run_wizard.raise_()
+        self._first_run_wizard.activateWindow()
+
+    def _handle_first_run_completed(self, on_completed: Optional[Callable[[], None]] = None):
+        self._sync_language_controls()
+        if on_completed:
+            on_completed()
+
+    def _current_latency_summary(self) -> dict:
+        if self._get_last_latency_summary:
+            try:
+                return self._get_last_latency_summary() or {}
+            except Exception:
+                return {}
+        return {}
 
     def _is_locked(self) -> bool:
         return bool(getattr(self.config, "locked", False))
@@ -1292,6 +2031,9 @@ class GameOverlay(QWidget):
             self.audio_devices = self._on_audio_devices_refresh() or []
         if self._settings_dialog:
             self._settings_dialog.set_audio_devices(self.audio_devices, self.audio_config)
+        if self._first_run_wizard and self._first_run_wizard.isVisible():
+            self._first_run_wizard.audio_devices = self.audio_devices
+            self._first_run_wizard._fill_wizard_audio_devices()
 
     def _request_shutdown(self):
         if self._on_shutdown_requested:
@@ -1352,6 +2094,8 @@ class GameOverlay(QWidget):
                 item.fade_start = None
                 item.timestamp = time.time()
                 self._refresh_labels()
+                if self._on_overlay_updated:
+                    self._on_overlay_updated(item_id)
                 return
 
     def _update_fade(self):

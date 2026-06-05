@@ -111,6 +111,58 @@ class HotkeyConfig:
 
 
 @dataclass
+class RuntimeConfig:
+    setup_completed: bool = False
+
+
+@dataclass
+class DebugConfig:
+    enabled: bool = False
+    log_level: str = "INFO"
+    save_audio_chunks: bool = False
+    save_transcripts: bool = False
+
+
+@dataclass
+class LatencyTrace:
+    item_id: str
+    speech_detected_at: float
+    queued_at: float
+    dequeued_at: float = 0.0
+    transcription_started_at: float = 0.0
+    transcription_finished_at: float = 0.0
+    translation_started_at: float = 0.0
+    translation_finished_at: float = 0.0
+    overlay_updated_at: float = 0.0
+
+    def summary_ms(self) -> dict:
+        wait_ms = self._elapsed_ms(self.queued_at, self.dequeued_at)
+        recognition_ms = self._elapsed_ms(self.transcription_started_at, self.transcription_finished_at)
+        translation_ms = self._elapsed_ms(self.translation_started_at, self.translation_finished_at)
+        overlay_ms = self._elapsed_ms(self.translation_finished_at, self.overlay_updated_at)
+        total_ms = self._elapsed_ms(self.speech_detected_at, self.overlay_updated_at)
+        return {
+            "wait_ms": wait_ms,
+            "recognition_ms": recognition_ms,
+            "translation_ms": translation_ms,
+            "overlay_ms": overlay_ms,
+            "total_ms": total_ms,
+        }
+
+    @staticmethod
+    def _elapsed_ms(start: float, end: float) -> int:
+        if not start or not end:
+            return 0
+        return int(round(max(0.0, end - start) * 1000))
+
+
+@dataclass
+class SpeechWorkItem:
+    audio_data: bytes
+    trace: LatencyTrace
+
+
+@dataclass
 class AppConfig:
     audio: AudioConfig = None
     whisper: WhisperConfig = None
@@ -118,6 +170,8 @@ class AppConfig:
     overlay: OverlayConfig = None
     websocket: WebSocketConfig = None
     hotkeys: HotkeyConfig = None
+    app: RuntimeConfig = None
+    debug: DebugConfig = None
 
 
 class VoxGoApp:
@@ -150,6 +204,8 @@ class VoxGoApp:
         self._translation_item_seq = 0
         self._hotkey_handles = []
         self._pending_notices = []
+        self._latency_traces = {}
+        self._last_latency_summary = {}
         self._last_audio_device = (
             self.config.audio.input_device_id,
             self.config.audio.input_device_index,
@@ -189,23 +245,26 @@ class VoxGoApp:
         default_config = AppConfig(
             audio=AudioConfig(), whisper=WhisperConfig(),
             translation=TranslationConfig(), overlay=OverlayConfig(),
-            websocket=WebSocketConfig(), hotkeys=HotkeyConfig()
+            websocket=WebSocketConfig(), hotkeys=HotkeyConfig(),
+            app=RuntimeConfig(), debug=DebugConfig()
         )
         if config_path and Path(config_path).exists():
             try:
                 with open(config_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                for section in ["audio", "whisper", "translation", "overlay", "websocket", "hotkeys"]:
+                for section in ["audio", "whisper", "translation", "overlay", "websocket", "hotkeys", "app", "debug"]:
                     if section in data:
                         target = getattr(default_config, section)
                         for k, v in data[section].items():
                             if hasattr(target, k):
                                 setattr(target, k, v)
                 self._migrate_legacy_model_download_settings(default_config, data.get("whisper", {}))
+                self._migrate_runtime_defaults(default_config)
                 logger.info(f"已加载配置: {config_path}")
             except Exception as e:
                 logger.error(f"配置加载失败: {e}")
         self._load_user_settings(default_config)
+        self._migrate_runtime_defaults(default_config)
         self._sync_language_flow(default_config)
         self._sync_whisper_vad_limit(default_config)
         return default_config
@@ -217,13 +276,14 @@ class VoxGoApp:
         try:
             with open(settings_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            for section in ["audio", "overlay", "hotkeys", "translation", "whisper"]:
+            for section in ["audio", "overlay", "hotkeys", "translation", "whisper", "app", "debug"]:
                 if section in data:
                     target = getattr(config, section)
                     for key, value in data[section].items():
                         if hasattr(target, key):
                             setattr(target, key, value)
             self._migrate_legacy_model_download_settings(config, data.get("whisper", {}))
+            self._migrate_runtime_defaults(config)
             logger.info("已加载用户设置: {}", settings_path)
         except Exception as e:
             logger.warning("用户设置加载失败: {}", e)
@@ -235,9 +295,32 @@ class VoxGoApp:
         if endpoint and "model_download_source" not in whisper_data:
             config.whisper.model_download_source = MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT
 
+    def _migrate_runtime_defaults(self, config: AppConfig):
+        try:
+            if float(getattr(config.translation, "timeout_seconds", 0) or 0) < 12:
+                config.translation.timeout_seconds = 12
+        except Exception:
+            config.translation.timeout_seconds = 12
+        if not hasattr(config.translation, "max_concurrent_requests"):
+            config.translation.max_concurrent_requests = 2
+        try:
+            config.translation.max_concurrent_requests = max(
+                1,
+                min(4, int(getattr(config.translation, "max_concurrent_requests", 2) or 2)),
+            )
+        except Exception:
+            config.translation.max_concurrent_requests = 2
+        if not hasattr(config.whisper, "cpu_threads"):
+            config.whisper.cpu_threads = 2
+        if not hasattr(config.whisper, "num_workers"):
+            config.whisper.num_workers = 1
+
     def _save_user_settings(self):
         settings_path = self._runtime_dir() / "user_settings.json"
         data = {
+            "app": {
+                "setup_completed": bool(getattr(self.config.app, "setup_completed", False)),
+            },
             "audio": {
                 "input_device_id": self.config.audio.input_device_id,
                 "input_device_index": self.config.audio.input_device_index,
@@ -264,6 +347,8 @@ class VoxGoApp:
             },
             "whisper": {
                 "device": _normalize_whisper_device(self.config.whisper.device),
+                "cpu_threads": int(getattr(self.config.whisper, "cpu_threads", 2) or 2),
+                "num_workers": int(getattr(self.config.whisper, "num_workers", 1) or 1),
                 "model_download_source": normalize_model_download_source(
                     getattr(self.config.whisper, "model_download_source", "modelscope"),
                     getattr(self.config.whisper, "model_download_endpoint", ""),
@@ -283,6 +368,13 @@ class VoxGoApp:
                 "target_lang": self.config.translation.target_lang,
                 "context_messages": self.config.translation.context_messages,
                 "timeout_seconds": self.config.translation.timeout_seconds,
+                "max_concurrent_requests": self.config.translation.max_concurrent_requests,
+            },
+            "debug": {
+                "enabled": bool(getattr(self.config.debug, "enabled", False)),
+                "log_level": getattr(self.config.debug, "log_level", "INFO"),
+                "save_audio_chunks": bool(getattr(self.config.debug, "save_audio_chunks", False)),
+                "save_transcripts": bool(getattr(self.config.debug, "save_transcripts", False)),
             },
         }
         try:
@@ -306,6 +398,34 @@ class VoxGoApp:
         vad_parameters = dict(config.whisper.vad_parameters or DEFAULT_VAD_PARAMS)
         vad_parameters["max_speech_duration_s"] = float(config.audio.max_speech_seconds or 8)
         config.whisper.vad_parameters = sanitize_vad_parameters(vad_parameters)
+
+    def _refresh_cached_settings(self):
+        self._last_audio_device = (
+            self.config.audio.input_device_id,
+            self.config.audio.input_device_index,
+            self.config.audio.input_device_name,
+            self.config.audio.max_speech_seconds,
+        )
+        self._last_translation_settings = (
+            normalize_translation_provider(self.config.translation.provider),
+            self.config.translation.api_key,
+            self.config.translation.model,
+            self.config.translation.endpoint,
+        )
+        self._last_language_flow = (
+            self.config.translation.source_lang,
+            self.config.translation.target_lang,
+        )
+        self._last_whisper_device = _normalize_whisper_device(self.config.whisper.device)
+        self._last_model_download_source = (
+            normalize_model_download_source(
+                getattr(self.config.whisper, "model_download_source", "modelscope"),
+                getattr(self.config.whisper, "model_download_endpoint", ""),
+            ),
+            normalize_model_download_endpoint(
+                getattr(self.config.whisper, "model_download_endpoint", "")
+            ),
+        )
 
     def _setup_logging(self):
         logger.remove()
@@ -459,8 +579,13 @@ class VoxGoApp:
         if self._paused or not self._running:
             return
         self._stats["speech_detected"] += 1
+        now = time.time()
+        work_item = SpeechWorkItem(
+            audio_data=audio_data,
+            trace=LatencyTrace(item_id="", speech_detected_at=now, queued_at=now),
+        )
         try:
-            self._speech_queue.put_nowait(audio_data)
+            self._speech_queue.put_nowait(work_item)
         except queue.Full:
             try:
                 self._speech_queue.get_nowait()
@@ -469,7 +594,8 @@ class VoxGoApp:
             except queue.Empty:
                 pass
             try:
-                self._speech_queue.put_nowait(audio_data)
+                work_item.trace.queued_at = time.time()
+                self._speech_queue.put_nowait(work_item)
             except queue.Full:
                 self._stats["dropped_speech"] += 1
                 logger.warning("语音处理队列仍然已满，丢弃当前片段")
@@ -487,10 +613,10 @@ class VoxGoApp:
 
     def _speech_worker(self):
         while True:
-            audio_data = self._speech_queue.get()
-            if audio_data is self._speech_stop_token:
+            work_item = self._speech_queue.get()
+            if work_item is self._speech_stop_token:
                 return
-            self._process_speech(audio_data)
+            self._process_speech(work_item)
 
     def _stop_speech_worker(self):
         while True:
@@ -510,16 +636,26 @@ class VoxGoApp:
         self._speech_worker_thread = None
         return True
 
-    def _process_speech(self, audio_data: bytes):
+    def _process_speech(self, work_item):
         try:
             if self._paused or not self._running:
                 return
+            if isinstance(work_item, SpeechWorkItem):
+                audio_data = work_item.audio_data
+                trace = work_item.trace
+            else:
+                audio_data = work_item
+                now = time.time()
+                trace = LatencyTrace(item_id="", speech_detected_at=now, queued_at=now)
+            trace.dequeued_at = time.time()
             t0 = time.time()
+            trace.transcription_started_at = t0
             with self._processing_lock:
                 result = self._speech_recognizer.transcribe_audio_bytes_with_language(
                     audio_data,
                     sample_rate=self.config.audio.sample_rate
                 )
+            trace.transcription_finished_at = time.time()
             text = result.text
             if not text or len(text.strip()) < 2:
                 return
@@ -536,9 +672,11 @@ class VoxGoApp:
             )
 
             item_id = self._next_translation_item_id()
+            trace.item_id = item_id
+            self._latency_traces[item_id] = trace
             if self._overlay:
                 self._overlay.add_translation_with_id(item_id, text, "...正在翻译")
-            self._start_async_translation(item_id, text, result.language)
+            self._start_async_translation(item_id, text, result.language, trace)
         except Exception as e:
             self._stats["errors"] += 1
             logger.exception(f"处理失败: {e}")
@@ -628,20 +766,39 @@ class VoxGoApp:
         if self._mobile_server:
             self.config.overlay.mobile_url = self._mobile_server.get_mobile_url()
         self._overlay = GameOverlay(
-            self.config.overlay,
-            self.config.hotkeys,
-            self.config.audio,
-            self.config.translation,
-            [],
-            self.config.whisper,
-            self._apply_overlay_settings,
-            self._list_audio_devices,
-            self._request_shutdown,
+            config=self.config.overlay,
+            hotkeys=self.config.hotkeys,
+            audio_config=self.config.audio,
+            translation_config=self.config.translation,
+            audio_devices=[],
+            whisper_config=self.config.whisper,
+            app_config=self.config.app,
+            debug_config=self.config.debug,
+            app_version=APP_VERSION,
+            runtime_dir=str(self._runtime_dir()),
+            get_last_latency_summary=self._get_last_latency_summary,
+            on_settings_changed=self._apply_overlay_settings,
+            on_audio_devices_refresh=self._list_audio_devices,
+            on_shutdown_requested=self._request_shutdown,
+            on_overlay_updated=self._on_overlay_updated,
         )
         self._overlay.show()
         self._flush_pending_notices()
         QTimer.singleShot(300, self._refresh_overlay_audio_devices)
         logger.info("浮窗已启动")
+
+    def _start_backend_after_setup(self):
+        self._sync_language_flow()
+        self._sync_whisper_vad_limit()
+        self.config.app.setup_completed = True
+        self._save_user_settings()
+        self._refresh_cached_settings()
+        self._notify_user(
+            "设置已保存",
+            "正在后台加载语音识别和翻译服务",
+            "状态",
+        )
+        self._start_backend_thread()
 
     def _request_shutdown(self):
         logger.info("收到退出按钮请求")
@@ -950,10 +1107,16 @@ class VoxGoApp:
         finally:
             loop.close()
 
-    def _start_async_translation(self, item_id: str, text: str, detected_language: str = ""):
+    def _start_async_translation(
+        self,
+        item_id: str,
+        text: str,
+        detected_language: str = "",
+        trace: Optional[LatencyTrace] = None,
+    ):
         if self._translation_loop and self._translation_loop.is_running():
             future = asyncio.run_coroutine_threadsafe(
-                self._translate_and_update(item_id, text, detected_language),
+                self._translate_and_update(item_id, text, detected_language, trace),
                 self._translation_loop,
             )
             future.add_done_callback(
@@ -967,16 +1130,27 @@ class VoxGoApp:
         def _run():
             try:
                 self._run_in_private_event_loop(
-                    self._translate_and_update(item_id, text, detected_language)
+                    self._translate_and_update(item_id, text, detected_language, trace)
                 )
             except Exception as e:
                 self._handle_translation_error(item_id, e)
 
         threading.Thread(target=_run, name="translation-fallback", daemon=True).start()
 
-    async def _translate_and_update(self, item_id: str, text: str, detected_language: str = ""):
+    async def _translate_and_update(
+        self,
+        item_id: str,
+        text: str,
+        detected_language: str = "",
+        trace: Optional[LatencyTrace] = None,
+    ):
         t0 = time.time()
+        trace = trace or self._latency_traces.get(item_id)
+        if trace:
+            trace.translation_started_at = t0
         translated = await self._translator.translate(text, detected_language)
+        if trace:
+            trace.translation_finished_at = time.time()
         if not translated or not translated.strip():
             translated = f"[翻译为空] {text}"
             logger.warning("翻译返回空结果，显示识别文本")
@@ -1011,14 +1185,40 @@ class VoxGoApp:
         except Exception as e:
             logger.exception(f"异步翻译任务失败: {e}")
             self._stats["errors"] += 1
+            trace = self._latency_traces.get(item_id)
+            if trace and not trace.translation_finished_at:
+                trace.translation_finished_at = time.time()
             if self._overlay:
                 self._overlay.update_translation(item_id, f"[翻译失败] {str(e)[:180]}")
 
     def _handle_translation_error(self, item_id: str, exc: Exception):
         logger.exception(f"翻译任务失败: {exc}")
         self._stats["errors"] += 1
+        trace = self._latency_traces.get(item_id)
+        if trace and not trace.translation_finished_at:
+            trace.translation_finished_at = time.time()
         if self._overlay:
             self._overlay.update_translation(item_id, f"[翻译失败] {str(exc)[:180]}")
+
+    def _on_overlay_updated(self, item_id: str):
+        trace = self._latency_traces.pop(item_id, None)
+        if not trace:
+            return
+        trace.overlay_updated_at = time.time()
+        self._last_latency_summary = trace.summary_ms()
+        if getattr(self.config.debug, "enabled", False):
+            logger.info(
+                "[延迟] item={} wait={}ms recognition={}ms translation={}ms overlay={}ms total={}ms",
+                item_id,
+                self._last_latency_summary.get("wait_ms", 0),
+                self._last_latency_summary.get("recognition_ms", 0),
+                self._last_latency_summary.get("translation_ms", 0),
+                self._last_latency_summary.get("overlay_ms", 0),
+                self._last_latency_summary.get("total_ms", 0),
+            )
+
+    def _get_last_latency_summary(self) -> dict:
+        return dict(self._last_latency_summary or {})
 
     def _broadcast_to_mobile(self, original: str, translated: str):
         if not self._mobile_server:
@@ -1075,12 +1275,21 @@ class VoxGoApp:
         try:
             self._start_mobile()
             self._start_qt()
-            self._notify_user(
-                "正在启动",
-                "浮窗已显示，正在后台加载语音识别和翻译服务",
-                "状态",
-            )
-            self._start_backend_thread()
+            if getattr(self.config.app, "setup_completed", False):
+                self._notify_user(
+                    "正在启动",
+                    "浮窗已显示，正在后台加载语音识别和翻译服务",
+                    "状态",
+                )
+                self._start_backend_thread()
+            else:
+                self._notify_user(
+                    "首次启动",
+                    "请先完成翻译接口和音频设备测试",
+                    "状态",
+                )
+                if self._overlay:
+                    self._overlay.show_first_run_wizard(self._start_backend_after_setup)
 
             self._qt_app.exec_()
         except KeyboardInterrupt:
