@@ -10,6 +10,7 @@ import socket
 import sys
 import threading
 import time
+import webbrowser
 from collections import deque
 from dataclasses import dataclass
 from typing import Callable, List, Optional
@@ -32,6 +33,7 @@ from app_info import APP_NAME, APP_VERSION
 from audio_capture import AudioConfig, AudioLevelMonitor
 from qr_widget import QrCodeWidget
 from translator import GameTranslator, TranslationConfig, TRANSLATION_PROVIDERS, normalize_translation_provider
+from update_checker import UpdateCheckResult, UpdateInfo, UpdateSettings, normalize_update_channel
 
 
 LANGUAGE_OPTIONS = (("en", "英语"), ("zh", "中文"))
@@ -48,6 +50,23 @@ WHISPER_DOWNLOAD_SOURCE_OPTIONS = (
     ("huggingface", "官方 Hugging Face"),
     ("custom_hf_endpoint", "自定义 Hugging Face Endpoint"),
 )
+TRANSLATION_TEST_COOLDOWN_SECONDS = 5
+
+
+def _start_button_cooldown(button: QPushButton, idle_text: str, seconds: int = TRANSLATION_TEST_COOLDOWN_SECONDS):
+    def tick(remaining: int):
+        try:
+            if remaining <= 0:
+                button.setText(idle_text)
+                button.setEnabled(True)
+                return
+            button.setText(f"{idle_text}（{remaining}s）")
+            button.setEnabled(False)
+            QTimer.singleShot(1000, lambda: tick(remaining - 1))
+        except RuntimeError:
+            return
+
+    tick(max(0, int(seconds)))
 
 
 def _normalize_language_code(value: str, default: str = "en") -> str:
@@ -188,6 +207,12 @@ class DebugConfig:
     log_level: str = "INFO"
     save_audio_chunks: bool = False
     save_transcripts: bool = False
+
+
+UPDATE_CHANNEL_OPTIONS = (
+    ("stable", "稳定版"),
+    ("beta", "Beta"),
+)
 
 
 def _copy_translation_config(config: TranslationConfig) -> TranslationConfig:
@@ -443,8 +468,60 @@ class FeedbackDialog(QDialog):
         QApplication.clipboard().setText(self.text.toPlainText())
 
     def _open_issue(self):
-        import webbrowser
         webbrowser.open("https://github.com/zxbb1190/VoxGo_game_voice_trans/issues/new")
+
+
+class UpdatePromptDialog(QDialog):
+    def __init__(self, update: UpdateInfo, current_version: str, on_ignore: Callable[[str], None], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("发现新版本")
+        self.setWindowFlags(self.windowFlags() | Qt.Tool)
+        self._update = update
+        self._current_version = current_version or APP_VERSION
+        self._on_ignore = on_ignore
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout()
+        message = QLabel(self._build_message())
+        message.setWordWrap(True)
+        message.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(message)
+
+        button_row = QHBoxLayout()
+        open_button = QPushButton("打开下载页")
+        later_button = QPushButton("稍后提醒")
+        ignore_button = QPushButton("忽略此版本")
+        open_button.clicked.connect(self._open_download_page)
+        later_button.clicked.connect(self.close)
+        ignore_button.clicked.connect(self._ignore_version)
+        button_row.addWidget(open_button)
+        button_row.addWidget(later_button)
+        button_row.addStretch()
+        button_row.addWidget(ignore_button)
+        layout.addLayout(button_row)
+        self.setLayout(layout)
+        self.resize(460, 260)
+
+    def _build_message(self) -> str:
+        notes = "\n".join(f"- {note}" for note in self._update.notes) or "- 查看下载页面了解更新内容"
+        return (
+            f"发现新版本 {self._update.display_title()}\n\n"
+            f"当前版本：v{self._current_version}\n"
+            f"新版内容：\n{notes}\n\n"
+            "是否打开下载页面？"
+        )
+
+    def _open_download_page(self):
+        url = self._update.release_url or self._update.download_lite_url or self._update.download_full_url
+        if url:
+            webbrowser.open(url)
+        self.close()
+
+    def _ignore_version(self):
+        if self._on_ignore:
+            self._on_ignore(self._update.latest)
+        self.close()
 
 
 class FirstRunWizard(QDialog):
@@ -543,7 +620,7 @@ class FirstRunWizard(QDialog):
 
         test_row = QHBoxLayout()
         self.wizard_translation_test_button = QPushButton("测试 API Key")
-        self.wizard_translation_test_label = QLabel("会发送一句测试文本，确认 API Key、模型名和地址可用。")
+        self.wizard_translation_test_label = QLabel("会发送一句测试文本；每次点击只调用一次接口，结束后按钮会短暂冷却。")
         self.wizard_translation_test_label.setWordWrap(True)
         self.wizard_translation_test_button.clicked.connect(self._test_translation)
         test_row.addWidget(self.wizard_translation_test_button)
@@ -696,6 +773,7 @@ class FirstRunWizard(QDialog):
     def _test_translation(self):
         self._collect_translation_values()
         self.wizard_translation_test_button.setEnabled(False)
+        self.wizard_translation_test_button.setText("测试中...")
         self.wizard_translation_test_label.setText("正在测试翻译接口...")
         self._translation_test_runner = TranslationTestRunner(
             self.translation_config,
@@ -704,9 +782,9 @@ class FirstRunWizard(QDialog):
         self._translation_test_runner.start()
 
     def _handle_translation_test_result(self, ok: bool, message: str):
-        self.wizard_translation_test_button.setEnabled(True)
         prefix = "成功" if ok else "失败"
         self.wizard_translation_test_label.setText(f"{prefix}：{message}")
+        _start_button_cooldown(self.wizard_translation_test_button, "测试 API Key")
 
     def _go_back(self):
         self.stack.setCurrentIndex(max(0, self.stack.currentIndex() - 1))
@@ -817,8 +895,10 @@ class OverlaySignals(QObject):
     update_translation = pyqtSignal(str, str)
     clear_history = pyqtSignal()
     toggle_visibility = pyqtSignal()
-    settings_changed = pyqtSignal(object, object, object, object, object)
+    settings_changed = pyqtSignal(object, object, object, object, object, object)
     refresh_audio_devices = pyqtSignal()
+    update_checking = pyqtSignal(bool)
+    update_check_result = pyqtSignal(object, bool)
 
 
 class ColorButton(QPushButton):
@@ -974,7 +1054,7 @@ def _make_icon(kind: str, color: str) -> QIcon:
 class SettingsDialog(QDialog):
     """Graphical settings for overlay and hotkeys."""
 
-    settings_changed = pyqtSignal(object, object, object, object, object)
+    settings_changed = pyqtSignal(object, object, object, object, object, object)
 
     def __init__(
         self,
@@ -986,6 +1066,7 @@ class SettingsDialog(QDialog):
         whisper_config=None,
         app_config: RuntimeConfig = None,
         debug_config: DebugConfig = None,
+        update_config: UpdateSettings = None,
         app_version: str = "",
         runtime_dir: str = "",
         last_latency_summary: Optional[dict] = None,
@@ -1002,6 +1083,7 @@ class SettingsDialog(QDialog):
         self.whisper_config = whisper_config or WhisperDeviceConfig()
         self.app_config = app_config or RuntimeConfig()
         self.debug_config = debug_config or DebugConfig()
+        self.update_config = update_config or UpdateSettings()
         self.app_version = app_version
         self.runtime_dir = runtime_dir
         self.last_latency_summary = last_latency_summary or {}
@@ -1075,7 +1157,7 @@ class SettingsDialog(QDialog):
 
         translation_test_row = QHBoxLayout()
         self.translation_test_button = QPushButton("测试翻译")
-        self.translation_test_label = QLabel("填写 API Key 后可测试接口是否可用。")
+        self.translation_test_label = QLabel("会发送一句测试文本；每次点击只调用一次接口，结束后按钮会短暂冷却。")
         self.translation_test_label.setWordWrap(True)
         self.translation_test_button.clicked.connect(self._test_translation)
         translation_test_row.addWidget(self.translation_test_button)
@@ -1154,6 +1236,23 @@ class SettingsDialog(QDialog):
         self.debug_enabled_check.setChecked(bool(getattr(self.debug_config, "enabled", False)))
         self.debug_enabled_check.stateChanged.connect(self._preview)
         form.addRow("调试模式", self.debug_enabled_check)
+
+        self.update_enabled_check = QCheckBox("每天自动检查")
+        self.update_enabled_check.setChecked(bool(getattr(self.update_config, "enabled", True)))
+        self.update_enabled_check.stateChanged.connect(self._preview)
+        self.update_channel_combo = QComboBox()
+        self._fill_update_channels()
+        self.update_channel_combo.currentIndexChanged.connect(self._preview)
+        self.update_check_button = QPushButton("检查更新")
+        self.update_check_button.clicked.connect(self._request_update_check)
+        self.update_status_label = QLabel(f"当前版本：v{self.app_version or APP_VERSION}")
+        self.update_status_label.setWordWrap(True)
+        update_row = QHBoxLayout()
+        update_row.addWidget(self.update_enabled_check)
+        update_row.addWidget(self.update_channel_combo)
+        update_row.addWidget(self.update_check_button)
+        update_row.addWidget(self.update_status_label, 1)
+        form.addRow("检查更新", update_row)
 
         layout.addLayout(form)
 
@@ -1257,6 +1356,18 @@ class SettingsDialog(QDialog):
         self.provider_combo.setCurrentIndex(selected_row)
         self.provider_combo.blockSignals(False)
 
+    def _fill_update_channels(self):
+        self.update_channel_combo.blockSignals(True)
+        self.update_channel_combo.clear()
+        selected_channel = normalize_update_channel(getattr(self.update_config, "channel", "stable"))
+        selected_row = 0
+        for row, (channel, label) in enumerate(UPDATE_CHANNEL_OPTIONS):
+            self.update_channel_combo.addItem(label, channel)
+            if channel == selected_channel:
+                selected_row = row
+        self.update_channel_combo.setCurrentIndex(selected_row)
+        self.update_channel_combo.blockSignals(False)
+
     def _provider_changed(self, *args):
         self._refresh_translation_provider_ui()
         self._preview()
@@ -1307,6 +1418,56 @@ class SettingsDialog(QDialog):
         if parent and hasattr(parent, "request_audio_device_refresh"):
             parent.request_audio_device_refresh()
 
+    def _request_update_check(self):
+        self._collect_values()
+        self.settings_changed.emit(
+            self.overlay_config,
+            self.hotkey_config,
+            self.audio_config,
+            self.translation_config,
+            self.whisper_config,
+            self.update_config,
+        )
+        parent = self.parent()
+        if parent and hasattr(parent, "request_update_check"):
+            parent.request_update_check(manual=True)
+
+    def set_update_checking(self, checking: bool):
+        if not hasattr(self, "update_check_button"):
+            return
+        self.update_check_button.setEnabled(not checking)
+        self.update_check_button.setText("检查中..." if checking else "检查更新")
+        if checking:
+            self.update_status_label.setText("正在检查更新...")
+
+    def set_update_check_result(self, result: UpdateCheckResult):
+        if not hasattr(self, "update_check_button"):
+            return
+        self.set_update_checking(False)
+        self.update_status_label.setText(self._format_update_status(result))
+
+    def show_pending_update(self, update: UpdateInfo):
+        if not hasattr(self, "update_status_label") or not update:
+            return
+        self.update_status_label.setText(f"发现新版本：{update.display_title()}")
+
+    def _format_update_status(self, result: UpdateCheckResult) -> str:
+        status = getattr(result, "status", "")
+        update = getattr(result, "update", None)
+        if status == "available" and update:
+            return f"发现新版本：{update.display_title()}"
+        if status == "current":
+            return "当前已是最新版本"
+        if status == "ignored" and update:
+            return f"已忽略 v{update.latest}"
+        if status == "channel_mismatch":
+            return result.message or "当前通道没有新版本"
+        if status == "disabled":
+            return "已关闭自动检查更新"
+        if status == "error":
+            return f"检查失败：{(result.message or '')[:160]}"
+        return result.message or f"当前版本：v{self.app_version or APP_VERSION}"
+
     def _current_audio_config(self) -> AudioConfig:
         self._collect_values()
         return _copy_audio_config(self.audio_config)
@@ -1314,6 +1475,7 @@ class SettingsDialog(QDialog):
     def _test_translation(self):
         self._collect_values()
         self.translation_test_button.setEnabled(False)
+        self.translation_test_button.setText("测试中...")
         self.translation_test_label.setText("正在测试翻译接口...")
         self._translation_test_runner = TranslationTestRunner(
             self.translation_config,
@@ -1322,9 +1484,9 @@ class SettingsDialog(QDialog):
         self._translation_test_runner.start()
 
     def _handle_translation_test_result(self, ok: bool, message: str):
-        self.translation_test_button.setEnabled(True)
         prefix = "成功" if ok else "失败"
         self.translation_test_label.setText(f"{prefix}：{message}")
+        _start_button_cooldown(self.translation_test_button, "测试翻译")
 
     def _open_feedback_dialog(self):
         self._collect_values()
@@ -1351,6 +1513,7 @@ class SettingsDialog(QDialog):
             self.audio_config,
             self.translation_config,
             self.whisper_config,
+            self.update_config,
         )
 
     def _collect_values(self):
@@ -1365,6 +1528,8 @@ class SettingsDialog(QDialog):
         self.hotkey_config.toggle_translation = self.toggle_translation_input.text().strip() or self.hotkey_config.toggle_translation
         self.hotkey_config.clear_history = self.clear_history_input.text().strip() or self.hotkey_config.clear_history
         self.debug_config.enabled = self.debug_enabled_check.isChecked()
+        self.update_config.enabled = self.update_enabled_check.isChecked()
+        self.update_config.channel = normalize_update_channel(self.update_channel_combo.currentData())
 
         self.translation_config.provider = normalize_translation_provider(self.provider_combo.currentData())
         self.translation_config.api_key = self.api_key_input.text().strip()
@@ -1429,11 +1594,14 @@ class GameOverlay(QWidget):
         whisper_config=None,
         app_config: RuntimeConfig = None,
         debug_config: DebugConfig = None,
+        update_config: UpdateSettings = None,
         app_version: str = "",
         runtime_dir: str = "",
         get_last_latency_summary: Optional[Callable[[], dict]] = None,
-        on_settings_changed: Optional[Callable[[OverlayConfig, HotkeyConfig, AudioDeviceConfig, TranslationConfig, object], None]] = None,
+        on_settings_changed: Optional[Callable[[OverlayConfig, HotkeyConfig, AudioDeviceConfig, TranslationConfig, object, UpdateSettings], None]] = None,
         on_audio_devices_refresh: Optional[Callable[[], List[dict]]] = None,
+        on_update_check_requested: Optional[Callable[[bool], None]] = None,
+        on_update_version_ignored: Optional[Callable[[str], None]] = None,
         on_shutdown_requested: Optional[Callable[[], None]] = None,
         on_overlay_updated: Optional[Callable[[str], None]] = None,
     ):
@@ -1446,11 +1614,14 @@ class GameOverlay(QWidget):
         self.whisper_config = whisper_config or WhisperDeviceConfig()
         self.app_config = app_config or RuntimeConfig()
         self.debug_config = debug_config or DebugConfig()
+        self.update_config = update_config or UpdateSettings()
         self.app_version = app_version or APP_VERSION
         self.runtime_dir = runtime_dir
         self._get_last_latency_summary = get_last_latency_summary
         self._on_settings_changed = on_settings_changed
         self._on_audio_devices_refresh = on_audio_devices_refresh
+        self._on_update_check_requested = on_update_check_requested
+        self._on_update_version_ignored = on_update_version_ignored
         self._on_shutdown_requested = on_shutdown_requested
         self._on_overlay_updated = on_overlay_updated
         self._translations: deque = deque(maxlen=self.config.max_lines)
@@ -1463,6 +1634,9 @@ class GameOverlay(QWidget):
         self._syncing_language_controls = False
         self._settings_dialog = None
         self._first_run_wizard = None
+        self._pending_update: Optional[UpdateInfo] = None
+        self._update_prompt_dialog = None
+        self._update_notice_shown_version = ""
         self._fade_timer = QTimer()
         self._fade_timer.timeout.connect(self._update_fade)
         self._fade_timer.start(100)
@@ -1558,6 +1732,13 @@ class GameOverlay(QWidget):
         self._settings_button.setCursor(Qt.PointingHandCursor)
         self._settings_button.clicked.connect(self._open_settings)
         toolbar_layout.addWidget(self._settings_button)
+        self._settings_badge = QLabel(self._settings_button)
+        self._settings_badge.setObjectName("settingsBadge")
+        self._settings_badge.setFixedSize(9, 9)
+        self._settings_badge.setStyleSheet(
+            "background: #F04438; border: 1px solid #FFFFFF; border-radius: 4px;"
+        )
+        self._settings_badge.hide()
 
         self._quit_button = QToolButton()
         self._quit_button.setObjectName("quitButton")
@@ -1713,6 +1894,8 @@ class GameOverlay(QWidget):
             self._fit_language_combo_width(self._target_lang_combo)
         if hasattr(self, "_lock_button"):
             self._style_lock_button()
+        if hasattr(self, "_settings_badge"):
+            self._position_settings_badge()
 
     def _create_language_combo(self, tooltip: str) -> QComboBox:
         combo = QComboBox()
@@ -1789,6 +1972,7 @@ class GameOverlay(QWidget):
                 self.audio_config,
                 self.translation_config,
                 self.whisper_config,
+                self.update_config,
             )
 
     def _setup_qr_code(self):
@@ -1844,12 +2028,16 @@ class GameOverlay(QWidget):
             self.whisper_config,
             self.app_config,
             self.debug_config,
+            self.update_config,
             self.app_version,
             self.runtime_dir,
             self._current_latency_summary(),
             self,
         )
         self._settings_dialog.settings_changed.connect(self._apply_settings)
+        if self._pending_update:
+            self._settings_dialog.show_pending_update(self._pending_update)
+        self._set_update_badge_visible(False)
         self._settings_dialog.show()
 
     def show_first_run_wizard(self, on_completed: Optional[Callable[[], None]] = None):
@@ -1927,6 +2115,7 @@ class GameOverlay(QWidget):
         self._style_lock_button()
         self._set_overlay_mouse_passthrough(locked)
         self._position_lock_button()
+        self._set_update_badge_visible(bool(self._pending_update))
         self.update()
 
     def _style_lock_button(self):
@@ -1984,6 +2173,85 @@ class GameOverlay(QWidget):
             self._lock_button.show()
             self._lock_button.raise_()
 
+    def _position_settings_badge(self):
+        if not hasattr(self, "_settings_badge") or not hasattr(self, "_settings_button"):
+            return
+        self._settings_badge.move(
+            max(0, self._settings_button.width() - self._settings_badge.width() - 1),
+            1,
+        )
+        self._settings_badge.raise_()
+
+    def _set_update_badge_visible(self, visible: bool):
+        if hasattr(self, "_settings_badge"):
+            self._settings_badge.setVisible(bool(visible) and not self._is_locked())
+            self._position_settings_badge()
+
+    def request_update_check(self, manual: bool = False):
+        if self._on_update_check_requested:
+            self.set_update_checking(True)
+            self._on_update_check_requested(bool(manual))
+            return
+        self.set_update_checking(False)
+
+    def set_update_checking(self, checking: bool):
+        self._signals.update_checking.emit(bool(checking))
+
+    def handle_update_check_result(self, result: UpdateCheckResult, manual: bool = False):
+        self._signals.update_check_result.emit(result, bool(manual))
+
+    def _handle_update_checking(self, checking: bool):
+        if self._settings_dialog and self._settings_dialog.isVisible():
+            self._settings_dialog.set_update_checking(checking)
+
+    def _handle_update_check_result(self, result: UpdateCheckResult, manual: bool = False):
+        self._handle_update_checking(False)
+        if self._settings_dialog and self._settings_dialog.isVisible():
+            self._settings_dialog.set_update_check_result(result)
+
+        update = getattr(result, "update", None)
+        if getattr(result, "status", "") == "available" and update:
+            self._pending_update = update
+            self._set_update_badge_visible(True)
+            self._show_update_prompt(update, manual)
+            return
+
+        if manual:
+            self._pending_update = None
+            self._set_update_badge_visible(False)
+
+    def _show_update_prompt(self, update: UpdateInfo, manual: bool = False):
+        if not update:
+            return
+        version = str(getattr(update, "latest", "") or "").strip()
+        if not manual and version == self._update_notice_shown_version:
+            return
+        self._update_notice_shown_version = version
+        if self._update_prompt_dialog and self._update_prompt_dialog.isVisible():
+            self._update_prompt_dialog.raise_()
+            self._update_prompt_dialog.activateWindow()
+            return
+        self._update_prompt_dialog = UpdatePromptDialog(
+            update,
+            self.app_version,
+            self._ignore_update_version,
+            self,
+        )
+        self._update_prompt_dialog.show()
+        self._update_prompt_dialog.raise_()
+        self._update_prompt_dialog.activateWindow()
+
+    def _ignore_update_version(self, version: str):
+        self.update_config.ignored_version = str(version or "").strip().lstrip("v")
+        self._pending_update = None
+        self._set_update_badge_visible(False)
+        if self._settings_dialog and self._settings_dialog.isVisible():
+            self._settings_dialog.set_update_check_result(
+                UpdateCheckResult("ignored", message=f"已忽略 v{self.update_config.ignored_version}")
+            )
+        if self._on_update_version_ignored:
+            self._on_update_version_ignored(self.update_config.ignored_version)
+
     def _notify_settings_changed(self):
         if self._on_settings_changed:
             self._on_settings_changed(
@@ -1992,6 +2260,7 @@ class GameOverlay(QWidget):
                 self.audio_config,
                 self.translation_config,
                 self.whisper_config,
+                self.update_config,
             )
 
     def _apply_settings(
@@ -2001,12 +2270,14 @@ class GameOverlay(QWidget):
         audio_config: AudioDeviceConfig,
         translation_config: TranslationConfig,
         whisper_config,
+        update_config,
     ):
         self.config = overlay_config
         self.hotkeys = hotkey_config
         self.audio_config = audio_config
         self.translation_config = translation_config
         self.whisper_config = whisper_config
+        self.update_config = update_config or self.update_config
         self.setWindowOpacity(self.config.opacity)
         self._apply_styles()
         self._qr_button.setIcon(_make_icon("qr", self.config.text_color))
@@ -2024,6 +2295,7 @@ class GameOverlay(QWidget):
                 self.audio_config,
                 self.translation_config,
                 self.whisper_config,
+                self.update_config,
             )
 
     def request_audio_device_refresh(self):
@@ -2050,6 +2322,8 @@ class GameOverlay(QWidget):
         self._signals.update_translation.connect(self._update_translation)
         self._signals.clear_history.connect(self._clear_history)
         self._signals.toggle_visibility.connect(self._toggle_visibility)
+        self._signals.update_checking.connect(self._handle_update_checking)
+        self._signals.update_check_result.connect(self._handle_update_check_result)
 
     def add_translation(self, original: str, translated: str):
         """线程安全地添加翻译"""

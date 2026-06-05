@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version, for example 0.2.0"
+        description: "Release version, for example 0.2.1"
         required: true
-        default: "0.2.0"
+        default: "0.2.1"
 
 permissions:
   contents: write
@@ -51,7 +51,7 @@ jobs:
       - name: Validate Python sources
         shell: powershell
         run: |
-          .\.venv-win\Scripts\python.exe -m py_compile app_info.py main.py overlay.py translator.py audio_capture.py speech_recognition.py mobile_server.py qr_widget.py
+          .\.venv-win\Scripts\python.exe -m py_compile app_info.py main.py overlay.py update_checker.py translator.py audio_capture.py speech_recognition.py mobile_server.py qr_widget.py
           .\.venv-win\Scripts\python.exe -m unittest discover -s tests -v
 
       - name: Build lite and full portable packages
@@ -71,9 +71,9 @@ jobs:
           @"
           ## VoxGo $env:APP_VERSION
 
-          - Added a first-run setup wizard that saves ``setup_completed`` and starts model loading only after setup is accepted.
-          - Added real translation API testing, live audio level testing, debug latency tracing, and a built-in feedback diagnostic template.
-          - Updated README and website copy around the player setup loop: download, test API Key, test system audio, enter game, then report diagnostics if blocked.
+          - Disabled PyInstaller UPX compression to reduce antivirus and SmartScreen false-positive risk for unsigned Windows packages.
+          - Added a short cooldown after the translation API test so repeated button clicks do not trigger repeated provider calls.
+          - Keeps the first-run setup wizard, real API/audio tests, debug latency tracing, and feedback diagnostic template from the 0.2 line.
 
           ### Downloads
 

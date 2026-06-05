@@ -19,7 +19,7 @@ from typing import Optional
 import keyboard
 from loguru import logger
 
-from app_info import APP_NAME, APP_VERSION
+from app_info import APP_NAME, APP_VERSION, USER_AGENT
 from audio_capture import SystemAudioCapture, AudioConfig, list_input_devices
 from speech_recognition import (
     MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT,
@@ -40,6 +40,13 @@ from translator import (
     normalize_translation_provider,
 )
 from mobile_server import MobileWebSocketManager, WebSocketConfig
+from update_checker import (
+    UpdateCheckResult,
+    UpdateSettings,
+    check_for_update,
+    normalize_update_channel,
+    should_check_for_update,
+)
 
 
 LANGUAGE_ALIASES = {
@@ -172,6 +179,7 @@ class AppConfig:
     hotkeys: HotkeyConfig = None
     app: RuntimeConfig = None
     debug: DebugConfig = None
+    update: UpdateSettings = None
 
 
 class VoxGoApp:
@@ -192,6 +200,7 @@ class VoxGoApp:
         self._translation_loop: Optional[asyncio.AbstractEventLoop] = None
         self._translation_thread: Optional[threading.Thread] = None
         self._startup_thread: Optional[threading.Thread] = None
+        self._update_check_thread: Optional[threading.Thread] = None
         self._startup_signals = None
         self._backend_ready = False
         self._running = False
@@ -246,13 +255,16 @@ class VoxGoApp:
             audio=AudioConfig(), whisper=WhisperConfig(),
             translation=TranslationConfig(), overlay=OverlayConfig(),
             websocket=WebSocketConfig(), hotkeys=HotkeyConfig(),
-            app=RuntimeConfig(), debug=DebugConfig()
+            app=RuntimeConfig(), debug=DebugConfig(), update=UpdateSettings()
         )
         if config_path and Path(config_path).exists():
             try:
-                with open(config_path, 'r', encoding='utf-8') as f:
+                with open(config_path, 'r', encoding='utf-8-sig') as f:
                     data = json.load(f)
-                for section in ["audio", "whisper", "translation", "overlay", "websocket", "hotkeys", "app", "debug"]:
+                for section in [
+                    "audio", "whisper", "translation", "overlay", "websocket",
+                    "hotkeys", "app", "debug", "update",
+                ]:
                     if section in data:
                         target = getattr(default_config, section)
                         for k, v in data[section].items():
@@ -274,9 +286,9 @@ class VoxGoApp:
         if not settings_path.exists():
             return
         try:
-            with open(settings_path, "r", encoding="utf-8") as f:
+            with open(settings_path, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
-            for section in ["audio", "overlay", "hotkeys", "translation", "whisper", "app", "debug"]:
+            for section in ["audio", "overlay", "hotkeys", "translation", "whisper", "app", "debug", "update"]:
                 if section in data:
                     target = getattr(config, section)
                     for key, value in data[section].items():
@@ -296,6 +308,8 @@ class VoxGoApp:
             config.whisper.model_download_source = MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT
 
     def _migrate_runtime_defaults(self, config: AppConfig):
+        if not getattr(config, "update", None):
+            config.update = UpdateSettings()
         try:
             if float(getattr(config.translation, "timeout_seconds", 0) or 0) < 12:
                 config.translation.timeout_seconds = 12
@@ -314,6 +328,14 @@ class VoxGoApp:
             config.whisper.cpu_threads = 2
         if not hasattr(config.whisper, "num_workers"):
             config.whisper.num_workers = 1
+        config.update.enabled = bool(getattr(config.update, "enabled", True))
+        config.update.channel = normalize_update_channel(getattr(config.update, "channel", "stable"))
+        try:
+            config.update.last_check_at = float(getattr(config.update, "last_check_at", 0) or 0)
+        except Exception:
+            config.update.last_check_at = 0
+        config.update.ignored_version = str(getattr(config.update, "ignored_version", "") or "").strip().lstrip("v")
+        config.update.manifest_url = str(getattr(config.update, "manifest_url", "") or "").strip()
 
     def _save_user_settings(self):
         settings_path = self._runtime_dir() / "user_settings.json"
@@ -375,6 +397,13 @@ class VoxGoApp:
                 "log_level": getattr(self.config.debug, "log_level", "INFO"),
                 "save_audio_chunks": bool(getattr(self.config.debug, "save_audio_chunks", False)),
                 "save_transcripts": bool(getattr(self.config.debug, "save_transcripts", False)),
+            },
+            "update": {
+                "enabled": bool(getattr(self.config.update, "enabled", True)),
+                "channel": normalize_update_channel(getattr(self.config.update, "channel", "stable")),
+                "last_check_at": float(getattr(self.config.update, "last_check_at", 0) or 0),
+                "ignored_version": str(getattr(self.config.update, "ignored_version", "") or "").strip().lstrip("v"),
+                "manifest_url": str(getattr(self.config.update, "manifest_url", "") or "").strip(),
             },
         }
         try:
@@ -774,17 +803,21 @@ class VoxGoApp:
             whisper_config=self.config.whisper,
             app_config=self.config.app,
             debug_config=self.config.debug,
+            update_config=self.config.update,
             app_version=APP_VERSION,
             runtime_dir=str(self._runtime_dir()),
             get_last_latency_summary=self._get_last_latency_summary,
             on_settings_changed=self._apply_overlay_settings,
             on_audio_devices_refresh=self._list_audio_devices,
+            on_update_check_requested=self._request_update_check,
+            on_update_version_ignored=self._ignore_update_version,
             on_shutdown_requested=self._request_shutdown,
             on_overlay_updated=self._on_overlay_updated,
         )
         self._overlay.show()
         self._flush_pending_notices()
         QTimer.singleShot(300, self._refresh_overlay_audio_devices)
+        QTimer.singleShot(1200, lambda: self._request_update_check(manual=False))
         logger.info("浮窗已启动")
 
     def _start_backend_after_setup(self):
@@ -812,15 +845,22 @@ class VoxGoApp:
         audio_config: AudioConfig,
         translation_config: TranslationConfig,
         whisper_config: WhisperConfig,
+        update_config: UpdateSettings,
     ):
         previous_device = self._last_audio_device
         previous_translation = self._last_translation_settings
         previous_whisper_device = self._last_whisper_device
         previous_model_download_source = self._last_model_download_source
+        previous_update = (
+            bool(getattr(self.config.update, "enabled", True)),
+            normalize_update_channel(getattr(self.config.update, "channel", "stable")),
+        )
         self.config.overlay = overlay_config
         self.config.hotkeys = hotkey_config
         self.config.translation = translation_config
         self.config.translation.provider = normalize_translation_provider(self.config.translation.provider)
+        self.config.update = update_config or self.config.update or UpdateSettings()
+        self._migrate_runtime_defaults(self.config)
         self.config.whisper.device = _normalize_whisper_device(
             getattr(whisper_config, "device", self.config.whisper.device)
         )
@@ -864,6 +904,10 @@ class VoxGoApp:
                 getattr(self.config.whisper, "model_download_endpoint", "")
             ),
         )
+        current_update = (
+            bool(getattr(self.config.update, "enabled", True)),
+            normalize_update_channel(getattr(self.config.update, "channel", "stable")),
+        )
         if self._running and current_device != previous_device:
             self._restart_audio_capture()
         if current_language_flow != previous_language_flow:
@@ -899,6 +943,12 @@ class VoxGoApp:
             self._notify_user(
                 "模型下载源已更新",
                 f"当前选择: {describe_model_download_source(*current_model_download_source)}\n重启程序后生效",
+                "状态",
+            )
+        if current_update != previous_update:
+            self._notify_user(
+                "更新检查已更新",
+                f"自动检查: {'开启' if current_update[0] else '关闭'}\n通道: {current_update[1]}",
                 "状态",
             )
         self._last_audio_device = current_device
@@ -1084,6 +1134,62 @@ class VoxGoApp:
     def _refresh_overlay_audio_devices(self):
         if self._overlay and not self._stopping:
             self._overlay.request_audio_device_refresh()
+
+    def _snapshot_update_settings(self) -> UpdateSettings:
+        self._migrate_runtime_defaults(self.config)
+        return UpdateSettings(
+            enabled=bool(getattr(self.config.update, "enabled", True)),
+            channel=normalize_update_channel(getattr(self.config.update, "channel", "stable")),
+            last_check_at=float(getattr(self.config.update, "last_check_at", 0) or 0),
+            ignored_version=str(getattr(self.config.update, "ignored_version", "") or "").strip().lstrip("v"),
+            manifest_url=str(getattr(self.config.update, "manifest_url", "") or "").strip(),
+        )
+
+    def _request_update_check(self, manual: bool = False):
+        if self._stopping:
+            return
+        settings = self._snapshot_update_settings()
+        if not manual and not should_check_for_update(settings):
+            logger.info("跳过自动更新检查：尚未到达检查间隔或自动检查已关闭")
+            return
+        if self._update_check_thread and self._update_check_thread.is_alive():
+            logger.info("更新检查正在进行，跳过重复请求")
+            if manual and self._overlay:
+                self._overlay.set_update_checking(True)
+            return
+        if manual and self._overlay:
+            self._overlay.set_update_checking(True)
+        self._update_check_thread = threading.Thread(
+            target=self._run_update_check,
+            args=(settings, bool(manual)),
+            name="update-check",
+            daemon=True,
+        )
+        self._update_check_thread.start()
+
+    def _run_update_check(self, settings: UpdateSettings, manual: bool):
+        try:
+            result = check_for_update(
+                APP_VERSION,
+                settings,
+                manual=manual,
+                user_agent=USER_AGENT,
+            )
+        except Exception as exc:
+            result = UpdateCheckResult("error", message=str(exc))
+
+        self.config.update.last_check_at = float(getattr(result, "checked_at", time.time()) or time.time())
+        self._save_user_settings()
+        logger.info("更新检查完成: status={}, message={}", result.status, result.message)
+        if self._overlay and not self._stopping:
+            self._overlay.handle_update_check_result(result, manual)
+        if manual and result.status == "error":
+            self._notify_user("更新检查失败", result.message, "错误")
+
+    def _ignore_update_version(self, version: str):
+        self.config.update.ignored_version = str(version or "").strip().lstrip("v")
+        self._save_user_settings()
+        logger.info("已忽略更新版本: v{}", self.config.update.ignored_version)
 
     def _show_audio_startup_warning(self, exc: Exception):
         detail = (

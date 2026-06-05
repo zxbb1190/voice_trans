@@ -1,0 +1,16 @@
+{
+  "latest": "0.2.1",
+  "channel": "stable",
+  "title": "VoxGo v0.2.1",
+  "notes": [
+    "关闭 PyInstaller UPX 压缩，降低未签名 Windows 包被安全软件误报的概率。",
+    "翻译接口测试按钮增加短暂冷却，避免重复点击触发多次接口调用。",
+    "保留首次启动向导、真实 API/音频测试、调试延迟记录和反馈诊断模板。"
+  ],
+  "release_url": "https://github.com/zxbb1190/VoxGo_game_voice_trans/releases/latest",
+  "download_lite_url": "https://github.com/zxbb1190/VoxGo_game_voice_trans/releases/latest/download/VoxGo-v0.2.1-lite.zip",
+  "download_full_url": "https://github.com/zxbb1190/VoxGo_game_voice_trans/releases/latest/download/VoxGo-v0.2.1-full.zip",
+  "sha256_lite": "",
+  "sha256_full": "",
+  "mandatory": false
+}
