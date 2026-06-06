@@ -1,6 +1,7 @@
 {
   "app": {
-    "setup_completed": false
+    "setup_completed": false,
+    "language": "zh-CN"
   },
   "audio": {
     "latency_mode": "balanced",

@@ -44,8 +44,17 @@ from audio_capture import (
 from qr_widget import QrCodeWidget
 from translator import GameTranslator, TranslationConfig, TRANSLATION_PROVIDERS, normalize_translation_provider
 from update_checker import UpdateCheckResult, UpdateInfo, UpdateSettings, normalize_update_channel
+from i18n import (
+    UI_LANGUAGE_ZH,
+    UI_LANGUAGE_OPTIONS,
+    is_english_ui,
+    language_label,
+    normalize_ui_language,
+    ui_text,
+)
 
 
+SPEECH_LANGUAGE_CODES = ("en", "zh")
 LANGUAGE_OPTIONS = (("en", "英语"), ("zh", "中文"))
 LANGUAGE_LABELS = dict(LANGUAGE_OPTIONS)
 OPPOSITE_LANGUAGE = {"en": "zh", "zh": "en"}
@@ -71,6 +80,69 @@ AUDIO_LATENCY_MODE_OPTIONS = (
 
 def _hotkey_label(value: str) -> str:
     return str(value or "").strip() or "未设置"
+
+
+def _ui_language(config) -> str:
+    return normalize_ui_language(getattr(config or RuntimeConfig(), "language", UI_LANGUAGE_ZH))
+
+
+def _tr(language: str, zh: str, en: str) -> str:
+    return ui_text(language, zh, en)
+
+
+def _speech_language_options(ui_language: str):
+    return tuple((code, language_label(code, ui_language)) for code in SPEECH_LANGUAGE_CODES)
+
+
+def _whisper_device_options(ui_language: str):
+    if is_english_ui(ui_language):
+        return (
+            ("cpu", "CPU (Recommended)"),
+            ("auto", "Auto detect"),
+            ("cuda", "NVIDIA GPU / CUDA"),
+        )
+    return WHISPER_DEVICE_OPTIONS
+
+
+def _model_download_source_options(ui_language: str):
+    if is_english_ui(ui_language):
+        return (
+            ("modelscope", "ModelScope mirror (Recommended in China)"),
+            ("huggingface", "Official Hugging Face"),
+            ("custom_hf_endpoint", "Custom Hugging Face Endpoint"),
+        )
+    return WHISPER_DOWNLOAD_SOURCE_OPTIONS
+
+
+def _audio_latency_mode_options(ui_language: str):
+    if is_english_ui(ui_language):
+        return (
+            (LATENCY_MODE_FAST, "Fast"),
+            (LATENCY_MODE_BALANCED, "Balanced (Recommended)"),
+            (LATENCY_MODE_ACCURATE, "Accurate"),
+            (LATENCY_MODE_CUSTOM, "Custom"),
+        )
+    return AUDIO_LATENCY_MODE_OPTIONS
+
+
+def _update_channel_options(ui_language: str):
+    if is_english_ui(ui_language):
+        return (
+            ("stable", "Stable"),
+            ("beta", "Beta"),
+        )
+    return UPDATE_CHANNEL_OPTIONS
+
+
+def _hotkey_label_for_ui(value: str, ui_language: str) -> str:
+    return str(value or "").strip() or _tr(ui_language, "未设置", "Not set")
+
+
+def _copy_runtime_config(config):
+    return RuntimeConfig(
+        setup_completed=bool(getattr(config, "setup_completed", False)),
+        language=normalize_ui_language(getattr(config, "language", UI_LANGUAGE_ZH)),
+    )
 
 
 def _start_button_cooldown(button: QPushButton, idle_text: str, seconds: int = TRANSLATION_TEST_COOLDOWN_SECONDS):
@@ -233,6 +305,7 @@ class WhisperDeviceConfig:
 @dataclass
 class RuntimeConfig:
     setup_completed: bool = False
+    language: str = UI_LANGUAGE_ZH
 
 
 @dataclass
@@ -297,11 +370,54 @@ def _build_feedback_report(
     runtime_dir: str,
     last_latency_summary: Optional[dict],
     selected_audio_device: str,
+    ui_language: str = UI_LANGUAGE_ZH,
 ) -> str:
     provider = normalize_translation_provider(getattr(translation_config, "provider", "openai_compatible"))
     provider_label = TRANSLATION_PROVIDERS.get(provider, provider)
     latency = last_latency_summary or {}
     log_dir = runtime_dir or "."
+    if is_english_ui(ui_language):
+        return "\n".join([
+            "## VoxGo Feedback",
+            "",
+            "### Basic Info",
+            f"- VoxGo version: {app_version or APP_VERSION}",
+            "- Package: Lite / Full (keep the one you used)",
+            f"- Windows version: {platform.platform()}",
+            "- Game:",
+            "- Bluetooth headset: yes / no",
+            "",
+            "### Current Settings",
+            f"- Audio device: {selected_audio_device or 'Auto select'}",
+            f"- Translation provider: {provider_label}",
+            f"- Model: {getattr(translation_config, 'model', '')}",
+            f"- Endpoint: {getattr(translation_config, 'endpoint', '')}",
+            f"- Recognition device: {getattr(whisper_config, 'device', 'cpu')}",
+            f"- Debug mode: {'on' if getattr(debug_config, 'enabled', False) else 'off'}",
+            "",
+            "### Latest Latency",
+            f"- Queue wait: {latency.get('wait_ms', 0)} ms",
+            f"- Recognition: {latency.get('recognition_ms', 0)} ms",
+            f"- Translation: {latency.get('translation_ms', 0)} ms",
+            f"- Overlay update: {latency.get('overlay_ms', 0)} ms",
+            f"- Total: {latency.get('total_ms', 0)} ms",
+            "",
+            "### Log Files",
+            f"- app.log: {log_dir}/app.log",
+            f"- crash_report.txt: {log_dir}/crash_report.txt",
+            "",
+            "### Problem Type",
+            "- Startup failed / no sound / sound but no subtitles / inaccurate recognition / slow translation / mobile mirror failed / other",
+            "",
+            "### Reproduction Steps",
+            "1. ",
+            "2. ",
+            "3. ",
+            "",
+            "### Expected Result",
+            "",
+            "### Actual Result",
+        ])
     return "\n".join([
         "## VoxGo 反馈",
         "",
@@ -390,13 +506,31 @@ class AudioTestSignals(QObject):
 
 
 class AudioTestPanel(QWidget):
-    def __init__(self, get_audio_config: Callable[[], AudioConfig], parent=None):
+    def __init__(
+        self,
+        get_audio_config: Callable[[], AudioConfig],
+        parent=None,
+        ui_language: str = UI_LANGUAGE_ZH,
+    ):
         super().__init__(parent)
         self._get_audio_config = get_audio_config
+        self._ui_language = normalize_ui_language(ui_language)
         self._monitor: Optional[AudioLevelMonitor] = None
         self._signals = AudioTestSignals()
         self._signals.level.connect(self._handle_level_update)
         self._init_ui()
+
+    def set_ui_language(self, ui_language: str):
+        self._ui_language = normalize_ui_language(ui_language)
+        self.start_button.setText(_tr(self._ui_language, "测试音频", "Test Audio"))
+        self.stop_button.setText(_tr(self._ui_language, "停止", "Stop"))
+        if not self._monitor:
+            self.device_label.setText(_tr(self._ui_language, "当前设备：未测试", "Current device: not tested"))
+            self.status_label.setText(_tr(
+                self._ui_language,
+                "播放游戏、Discord 或视频声音后，音量条应该跳动。",
+                "Play game, Discord, or video audio; the level meter should move.",
+            ))
 
     def _init_ui(self):
         layout = QVBoxLayout()
@@ -404,8 +538,8 @@ class AudioTestPanel(QWidget):
         layout.setSpacing(6)
 
         button_row = QHBoxLayout()
-        self.start_button = QPushButton("测试音频")
-        self.stop_button = QPushButton("停止")
+        self.start_button = QPushButton(_tr(self._ui_language, "测试音频", "Test Audio"))
+        self.stop_button = QPushButton(_tr(self._ui_language, "停止", "Stop"))
         self.stop_button.setEnabled(False)
         self.start_button.clicked.connect(self.start_test)
         self.stop_button.clicked.connect(self.stop_test)
@@ -413,11 +547,15 @@ class AudioTestPanel(QWidget):
         button_row.addWidget(self.stop_button)
         button_row.addStretch()
 
-        self.device_label = QLabel("当前设备：未测试")
+        self.device_label = QLabel(_tr(self._ui_language, "当前设备：未测试", "Current device: not tested"))
         self.level_bar = QProgressBar()
         self.level_bar.setRange(0, 100)
         self.level_bar.setValue(0)
-        self.status_label = QLabel("播放游戏、Discord 或视频声音后，音量条应该跳动。")
+        self.status_label = QLabel(_tr(
+            self._ui_language,
+            "播放游戏、Discord 或视频声音后，音量条应该跳动。",
+            "Play game, Discord, or video audio; the level meter should move.",
+        ))
         self.status_label.setWordWrap(True)
 
         layout.addLayout(button_row)
@@ -429,19 +567,27 @@ class AudioTestPanel(QWidget):
     def start_test(self):
         self.stop_test()
         self.level_bar.setValue(0)
-        self.status_label.setText("正在打开音频设备...")
+        self.status_label.setText(_tr(self._ui_language, "正在打开音频设备...", "Opening audio device..."))
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         try:
             config = _copy_audio_config(self._get_audio_config())
             self._monitor = AudioLevelMonitor(config, self._signals.level.emit)
             self._monitor.start()
-            self.status_label.setText("正在监听声音，播放游戏/视频/Discord 后观察音量条。")
+            self.status_label.setText(_tr(
+                self._ui_language,
+                "正在监听声音，播放游戏/视频/Discord 后观察音量条。",
+                "Listening. Play game, video, or Discord audio and watch the meter.",
+            ))
         except Exception as e:
             self._monitor = None
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
-            self.status_label.setText(f"音频测试失败：{str(e)[:220]}")
+            self.status_label.setText(_tr(
+                self._ui_language,
+                f"音频测试失败：{str(e)[:220]}",
+                f"Audio test failed: {str(e)[:220]}",
+            ))
 
     def stop_test(self):
         if self._monitor:
@@ -452,7 +598,11 @@ class AudioTestPanel(QWidget):
 
     def _handle_level_update(self, payload: dict):
         if payload.get("error"):
-            self.status_label.setText(f"音频读取失败：{payload.get('error')}")
+            self.status_label.setText(_tr(
+                self._ui_language,
+                f"音频读取失败：{payload.get('error')}",
+                f"Audio read failed: {payload.get('error')}",
+            ))
             self.stop_test()
             return
         rms = float(payload.get("rms_dbfs", -120.0))
@@ -463,11 +613,16 @@ class AudioTestPanel(QWidget):
         device = payload.get("device") or {}
         if device:
             self.device_label.setText(
-                f"当前设备：{device.get('type', '音频')} [{device.get('index')}] "
-                f"{device.get('name', '')} ({device.get('sample_rate')}Hz/{device.get('channels')}ch)"
+                _tr(self._ui_language, "当前设备：", "Current device: ")
+                + f"{device.get('type', 'Audio')} [{device.get('index')}] "
+                + f"{device.get('name', '')} ({device.get('sample_rate')}Hz/{device.get('channels')}ch)"
             )
-        state = "检测到声音" if detected else "暂未检测到明显声音"
-        self.status_label.setText(f"{state}。当前 {rms:.1f} dBFS，峰值 {peak:.1f} dBFS。")
+        if is_english_ui(self._ui_language):
+            state = "Sound detected" if detected else "No clear sound yet"
+            self.status_label.setText(f"{state}. Current {rms:.1f} dBFS, peak {peak:.1f} dBFS.")
+        else:
+            state = "检测到声音" if detected else "暂未检测到明显声音"
+            self.status_label.setText(f"{state}。当前 {rms:.1f} dBFS，峰值 {peak:.1f} dBFS。")
 
     def close(self):
         self.stop_test()
@@ -475,19 +630,24 @@ class AudioTestPanel(QWidget):
 
 
 class FeedbackDialog(QDialog):
-    def __init__(self, report_text: str, parent=None):
+    def __init__(self, report_text: str, ui_language: str = UI_LANGUAGE_ZH, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("提交反馈")
+        self._ui_language = normalize_ui_language(ui_language)
+        self.setWindowTitle(_tr(self._ui_language, "提交反馈", "Submit Feedback"))
         self.setWindowFlags(self.windowFlags() | Qt.Tool)
         layout = QVBoxLayout()
-        label = QLabel("复制下面的诊断模板，到 GitHub Issue 里补充问题描述。")
+        label = QLabel(_tr(
+            self._ui_language,
+            "复制下面的诊断模板，到 GitHub Issue 里补充问题描述。",
+            "Copy the diagnostic template below into a GitHub Issue and add your own description.",
+        ))
         label.setWordWrap(True)
         self.text = QPlainTextEdit(report_text)
         self.text.setMinimumSize(640, 360)
         button_row = QHBoxLayout()
-        copy_button = QPushButton("复制模板")
-        open_button = QPushButton("打开 Issue")
-        close_button = QPushButton("关闭")
+        copy_button = QPushButton(_tr(self._ui_language, "复制模板", "Copy Template"))
+        open_button = QPushButton(_tr(self._ui_language, "打开 Issue", "Open Issue"))
+        close_button = QPushButton(_tr(self._ui_language, "关闭", "Close"))
         copy_button.clicked.connect(self._copy)
         open_button.clicked.connect(self._open_issue)
         close_button.clicked.connect(self.close)
@@ -508,9 +668,17 @@ class FeedbackDialog(QDialog):
 
 
 class UpdatePromptDialog(QDialog):
-    def __init__(self, update: UpdateInfo, current_version: str, on_ignore: Callable[[str], None], parent=None):
+    def __init__(
+        self,
+        update: UpdateInfo,
+        current_version: str,
+        on_ignore: Callable[[str], None],
+        ui_language: str = UI_LANGUAGE_ZH,
+        parent=None,
+    ):
         super().__init__(parent)
-        self.setWindowTitle("发现新版本")
+        self._ui_language = normalize_ui_language(ui_language)
+        self.setWindowTitle(_tr(self._ui_language, "发现新版本", "Update Available"))
         self.setWindowFlags(self.windowFlags() | Qt.Tool)
         self._update = update
         self._current_version = current_version or APP_VERSION
@@ -525,9 +693,9 @@ class UpdatePromptDialog(QDialog):
         layout.addWidget(message)
 
         button_row = QHBoxLayout()
-        open_button = QPushButton("打开下载页")
-        later_button = QPushButton("稍后提醒")
-        ignore_button = QPushButton("忽略此版本")
+        open_button = QPushButton(_tr(self._ui_language, "打开下载页", "Open Downloads"))
+        later_button = QPushButton(_tr(self._ui_language, "稍后提醒", "Later"))
+        ignore_button = QPushButton(_tr(self._ui_language, "忽略此版本", "Ignore This Version"))
         open_button.clicked.connect(self._open_download_page)
         later_button.clicked.connect(self.close)
         ignore_button.clicked.connect(self._ignore_version)
@@ -540,7 +708,16 @@ class UpdatePromptDialog(QDialog):
         self.resize(460, 260)
 
     def _build_message(self) -> str:
-        notes = "\n".join(f"- {note}" for note in self._update.notes) or "- 查看下载页面了解更新内容"
+        notes = "\n".join(f"- {note}" for note in self._update.notes)
+        if not notes:
+            notes = _tr(self._ui_language, "- 查看下载页面了解更新内容", "- Open the download page for details")
+        if is_english_ui(self._ui_language):
+            return (
+                f"New version available: {self._update.display_title()}\n\n"
+                f"Current version: v{self._current_version}\n"
+                f"What's new:\n{notes}\n\n"
+                "Open the download page?"
+            )
         return (
             f"发现新版本 {self._update.display_title()}\n\n"
             f"当前版本：v{self._current_version}\n"
@@ -561,27 +738,39 @@ class UpdatePromptDialog(QDialog):
 
 
 class FullscreenHelpDialog(QDialog):
-    def __init__(self, hotkeys: HotkeyConfig, parent=None):
+    def __init__(self, hotkeys: HotkeyConfig, ui_language: str = UI_LANGUAGE_ZH, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("全屏兼容说明")
+        self._ui_language = normalize_ui_language(ui_language)
+        self.setWindowTitle(_tr(self._ui_language, "全屏兼容说明", "Fullscreen Compatibility"))
         self.setWindowFlags(self.windowFlags() | Qt.Tool)
         hotkeys = hotkeys or HotkeyConfig()
 
         layout = QVBoxLayout()
-        message = QLabel(
-            "如果独占全屏游戏里看不到浮窗，请优先把游戏显示模式改成无边框窗口或窗口化全屏。\n\n"
-            "建议先在桌面把浮窗拖到合适位置，再点击锁定。锁定后浮窗会减少鼠标干扰。\n\n"
-            f"全屏中可用热键控制：{_hotkey_label(hotkeys.toggle_overlay)} 显示/隐藏，"
-            f"{_hotkey_label(hotkeys.toggle_translation)} 暂停/恢复，"
-            f"{_hotkey_label(hotkeys.clear_history)} 清空字幕。\n\n"
-            "如果游戏以管理员身份运行，VoxGo 也需要用管理员身份启动，热键和置顶才更稳定。"
-        )
+        if is_english_ui(self._ui_language):
+            message_text = (
+                "If the overlay does not appear in exclusive fullscreen games, switch the game to borderless windowed or windowed fullscreen first.\n\n"
+                "Place the overlay on the desktop before locking it. Locked mode reduces mouse interference.\n\n"
+                f"Hotkeys available in-game: {_hotkey_label_for_ui(hotkeys.toggle_overlay, self._ui_language)} show/hide, "
+                f"{_hotkey_label_for_ui(hotkeys.toggle_translation, self._ui_language)} pause/resume, "
+                f"{_hotkey_label_for_ui(hotkeys.clear_history, self._ui_language)} clear subtitles.\n\n"
+                "If the game runs as administrator, run VoxGo as administrator as well for more reliable hotkeys and always-on-top behavior."
+            )
+        else:
+            message_text = (
+                "如果独占全屏游戏里看不到浮窗，请优先把游戏显示模式改成无边框窗口或窗口化全屏。\n\n"
+                "建议先在桌面把浮窗拖到合适位置，再点击锁定。锁定后浮窗会减少鼠标干扰。\n\n"
+                f"全屏中可用热键控制：{_hotkey_label(hotkeys.toggle_overlay)} 显示/隐藏，"
+                f"{_hotkey_label(hotkeys.toggle_translation)} 暂停/恢复，"
+                f"{_hotkey_label(hotkeys.clear_history)} 清空字幕。\n\n"
+                "如果游戏以管理员身份运行，VoxGo 也需要用管理员身份启动，热键和置顶才更稳定。"
+            )
+        message = QLabel(message_text)
         message.setWordWrap(True)
         message.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(message)
 
         button_row = QHBoxLayout()
-        close_button = QPushButton("知道了")
+        close_button = QPushButton(_tr(self._ui_language, "知道了", "Got It"))
         close_button.clicked.connect(self.close)
         button_row.addStretch()
         button_row.addWidget(close_button)
@@ -590,8 +779,25 @@ class FullscreenHelpDialog(QDialog):
         self.resize(520, 300)
 
 
-def _build_help_text(hotkeys: HotkeyConfig) -> str:
+def _build_help_text(hotkeys: HotkeyConfig, ui_language: str = UI_LANGUAGE_ZH) -> str:
     hotkeys = hotkeys or HotkeyConfig()
+    ui_language = normalize_ui_language(ui_language)
+    if is_english_ui(ui_language):
+        return (
+            "Fullscreen compatibility\n"
+            "If the overlay does not appear in exclusive fullscreen games, switch the game to borderless windowed or windowed fullscreen first.\n"
+            "Place the overlay on the desktop before locking it to reduce mouse interference.\n"
+            "If the game runs as administrator, run VoxGo as administrator as well for more reliable hotkeys and always-on-top behavior.\n\n"
+            "Current hotkeys\n"
+            f"{_hotkey_label_for_ui(hotkeys.toggle_overlay, ui_language)}: Show/hide overlay\n"
+            f"{_hotkey_label_for_ui(hotkeys.toggle_translation, ui_language)}: Pause/resume translation\n"
+            f"{_hotkey_label_for_ui(hotkeys.clear_history, ui_language)}: Clear subtitles\n"
+            f"{_hotkey_label_for_ui(getattr(hotkeys, 'toggle_lock', ''), ui_language)}: Lock/unlock overlay\n"
+            f"{_hotkey_label_for_ui(getattr(hotkeys, 'toggle_compact', ''), ui_language)}: Toggle compact mode\n\n"
+            "System tray\n"
+            "The tray icon can show/hide the overlay, pause/resume, clear subtitles, toggle compact mode, open settings, and quit.\n"
+            "If a game covers the overlay or the overlay is hidden, use the tray icon or hotkeys."
+        )
 
     return (
         "全屏兼容\n"
@@ -637,6 +843,8 @@ class FirstRunWizard(QDialog):
         self.audio_devices = audio_devices or []
         self.whisper_config = whisper_config or WhisperDeviceConfig()
         self.app_config = app_config or RuntimeConfig()
+        self.app_config.language = normalize_ui_language(getattr(self.app_config, "language", UI_LANGUAGE_ZH))
+        self._ui_language = self.app_config.language
         self.debug_config = debug_config or DebugConfig()
         self.app_version = app_version or APP_VERSION
         self.runtime_dir = runtime_dir
@@ -932,7 +1140,9 @@ class FirstRunWizard(QDialog):
                 self.runtime_dir,
                 latency,
                 selected_device,
+                self._ui_language,
             ),
+            self._ui_language,
             self,
         )
         self._feedback_dialog.show()
@@ -983,7 +1193,7 @@ class OverlaySignals(QObject):
     toggle_visibility = pyqtSignal()
     toggle_lock = pyqtSignal()
     toggle_compact = pyqtSignal()
-    settings_changed = pyqtSignal(object, object, object, object, object, object)
+    settings_changed = pyqtSignal(object, object, object, object, object, object, object)
     refresh_audio_devices = pyqtSignal()
     update_checking = pyqtSignal(bool)
     update_check_result = pyqtSignal(object, bool)
@@ -1181,7 +1391,7 @@ def _make_icon(kind: str, color: str) -> QIcon:
 class SettingsDialog(QDialog):
     """Graphical settings for overlay and hotkeys."""
 
-    settings_changed = pyqtSignal(object, object, object, object, object, object)
+    settings_changed = pyqtSignal(object, object, object, object, object, object, object)
 
     def __init__(
         self,
@@ -1200,7 +1410,6 @@ class SettingsDialog(QDialog):
         parent=None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("浮窗设置")
         self.setWindowFlags(self.windowFlags() | Qt.Tool)
         self.overlay_config = overlay_config
         self.hotkey_config = hotkey_config
@@ -1208,7 +1417,10 @@ class SettingsDialog(QDialog):
         self.translation_config = translation_config or TranslationConfig()
         self.audio_devices = audio_devices or []
         self.whisper_config = whisper_config or WhisperDeviceConfig()
-        self.app_config = app_config or RuntimeConfig()
+        self.app_config = _copy_runtime_config(app_config or RuntimeConfig())
+        self.app_config.language = normalize_ui_language(getattr(self.app_config, "language", UI_LANGUAGE_ZH))
+        self._ui_language = self.app_config.language
+        self.setWindowTitle(_tr(self._ui_language, "浮窗设置", "Overlay Settings"))
         self.debug_config = debug_config or DebugConfig()
         self.update_config = update_config or UpdateSettings()
         self.app_version = app_version
@@ -1221,14 +1433,19 @@ class SettingsDialog(QDialog):
     def _init_ui(self):
         layout = QVBoxLayout()
         tabs = QTabWidget()
-        appearance_form = self._make_settings_tab(tabs, "外观")
-        translation_form = self._make_settings_tab(tabs, "翻译")
-        audio_form = self._make_settings_tab(tabs, "语音")
-        advanced_form = self._make_settings_tab(tabs, "高级")
-        help_form = self._make_settings_tab(tabs, "说明")
-        hotkey_form = self._make_settings_tab(tabs, "快捷键")
-        about_form = self._make_settings_tab(tabs, "关于")
+        appearance_form = self._make_settings_tab(tabs, _tr(self._ui_language, "外观", "Appearance"))
+        translation_form = self._make_settings_tab(tabs, _tr(self._ui_language, "翻译", "Translation"))
+        audio_form = self._make_settings_tab(tabs, _tr(self._ui_language, "语音", "Speech"))
+        advanced_form = self._make_settings_tab(tabs, _tr(self._ui_language, "高级", "Advanced"))
+        help_form = self._make_settings_tab(tabs, _tr(self._ui_language, "说明", "Guide"))
+        hotkey_form = self._make_settings_tab(tabs, _tr(self._ui_language, "快捷键", "Hotkeys"))
+        about_form = self._make_settings_tab(tabs, _tr(self._ui_language, "关于", "About"))
         about_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+
+        self.ui_language_combo = QComboBox()
+        self._fill_ui_languages()
+        self.ui_language_combo.currentIndexChanged.connect(self._ui_language_changed)
+        appearance_form.addRow("Language", self.ui_language_combo)
 
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setRange(30, 100)
@@ -1239,7 +1456,7 @@ class SettingsDialog(QDialog):
         opacity_row.addWidget(self.opacity_label)
         self.opacity_slider.valueChanged.connect(lambda value: self.opacity_label.setText(f"{value}%"))
         self.opacity_slider.valueChanged.connect(self._preview)
-        appearance_form.addRow("整体透明度", opacity_row)
+        appearance_form.addRow(_tr(self._ui_language, "整体透明度", "Window Opacity"), opacity_row)
 
         self.bg_opacity_slider = QSlider(Qt.Horizontal)
         self.bg_opacity_slider.setRange(20, 100)
@@ -1250,7 +1467,7 @@ class SettingsDialog(QDialog):
         bg_opacity_row.addWidget(self.bg_opacity_label)
         self.bg_opacity_slider.valueChanged.connect(lambda value: self.bg_opacity_label.setText(f"{value}%"))
         self.bg_opacity_slider.valueChanged.connect(self._preview)
-        appearance_form.addRow("背景透明度", bg_opacity_row)
+        appearance_form.addRow(_tr(self._ui_language, "背景透明度", "Background Opacity"), bg_opacity_row)
 
         self.font_slider = QSlider(Qt.Horizontal)
         self.font_slider.setRange(12, 30)
@@ -1261,31 +1478,31 @@ class SettingsDialog(QDialog):
         font_row.addWidget(self.font_label)
         self.font_slider.valueChanged.connect(lambda value: self.font_label.setText(f"{value}px"))
         self.font_slider.valueChanged.connect(self._preview)
-        appearance_form.addRow("字号", font_row)
+        appearance_form.addRow(_tr(self._ui_language, "字号", "Font Size"), font_row)
 
         self.text_color_btn = ColorButton(self.overlay_config.text_color)
         self.text_color_btn.color_changed.connect(self._preview)
-        appearance_form.addRow("译文颜色", self.text_color_btn)
+        appearance_form.addRow(_tr(self._ui_language, "译文颜色", "Translation Color"), self.text_color_btn)
 
         self.original_color_btn = ColorButton(self.overlay_config.original_text_color)
         self.original_color_btn.color_changed.connect(self._preview)
-        appearance_form.addRow("原文颜色", self.original_color_btn)
+        appearance_form.addRow(_tr(self._ui_language, "原文颜色", "Original Color"), self.original_color_btn)
 
-        self.show_original_check = QCheckBox("显示英文原文")
+        self.show_original_check = QCheckBox(_tr(self._ui_language, "显示英文原文", "Show original speech text"))
         self.show_original_check.setChecked(self.overlay_config.show_original)
         self.show_original_check.stateChanged.connect(self._preview)
-        appearance_form.addRow("中英对照", self.show_original_check)
+        appearance_form.addRow(_tr(self._ui_language, "中英对照", "Bilingual Display"), self.show_original_check)
 
-        self.compact_mode_check = QCheckBox("启用紧凑浮窗")
+        self.compact_mode_check = QCheckBox(_tr(self._ui_language, "启用紧凑浮窗", "Enable compact overlay"))
         self.compact_mode_check.setChecked(bool(getattr(self.overlay_config, "compact_mode", False)))
         self.compact_mode_check.stateChanged.connect(self._preview)
-        appearance_form.addRow("紧凑模式", self.compact_mode_check)
+        appearance_form.addRow(_tr(self._ui_language, "紧凑模式", "Compact Mode"), self.compact_mode_check)
 
         self.provider_combo = QComboBox()
         self.provider_combo.setToolTip("OpenAI 兼容适合硅基流动、DeepSeek、Qwen、GLM 和本地模型；Google 使用 Cloud Translation Basic v2")
         self._fill_translation_providers()
         self.provider_combo.currentIndexChanged.connect(self._provider_changed)
-        translation_form.addRow("翻译服务", self.provider_combo)
+        translation_form.addRow(_tr(self._ui_language, "翻译服务", "Translation Provider"), self.provider_combo)
 
         self.api_key_input = QLineEdit(self.translation_config.api_key)
         self.api_key_input.setEchoMode(QLineEdit.Password)
@@ -1295,25 +1512,29 @@ class SettingsDialog(QDialog):
         translation_form.addRow("API Key", self.api_key_input)
 
         translation_test_row = QHBoxLayout()
-        self.translation_test_button = QPushButton("测试翻译")
-        self.translation_test_label = QLabel("会发送一句测试文本；每次点击只调用一次接口，结束后按钮会短暂冷却。")
+        self.translation_test_button = QPushButton(_tr(self._ui_language, "测试翻译", "Test Translation"))
+        self.translation_test_label = QLabel(_tr(
+            self._ui_language,
+            "会发送一句测试文本；每次点击只调用一次接口，结束后按钮会短暂冷却。",
+            "Sends one test sentence; each click makes one request and then briefly cools down.",
+        ))
         self.translation_test_label.setWordWrap(True)
         self.translation_test_button.clicked.connect(self._test_translation)
         translation_test_row.addWidget(self.translation_test_button)
         translation_test_row.addWidget(self.translation_test_label, 1)
-        translation_form.addRow("接口测试", translation_test_row)
+        translation_form.addRow(_tr(self._ui_language, "接口测试", "API Test"), translation_test_row)
 
         self.model_input = QLineEdit(self.translation_config.model)
         self.model_input.setPlaceholderText("tencent/Hunyuan-MT-7B")
         self.model_input.setToolTip("填写服务商要求的模型名，例如 tencent/Hunyuan-MT-7B、deepseek-chat、qwen-plus、glm-4-flash")
         self.model_input.editingFinished.connect(self._preview)
-        translation_form.addRow("模型名", self.model_input)
+        translation_form.addRow(_tr(self._ui_language, "模型名", "Model"), self.model_input)
 
         self.endpoint_input = QLineEdit(self.translation_config.endpoint)
         self.endpoint_input.setPlaceholderText("https://api.siliconflow.cn/v1/chat/completions")
         self.endpoint_input.setToolTip("填写 OpenAI 兼容地址；可填完整 /chat/completions URL，也可填以 /v1 结尾的 base_url")
         self.endpoint_input.editingFinished.connect(self._preview)
-        translation_form.addRow("兼容地址", self.endpoint_input)
+        translation_form.addRow(_tr(self._ui_language, "兼容地址", "Compatible Endpoint"), self.endpoint_input)
         self._refresh_translation_provider_ui()
 
         self.model_download_source_combo = QComboBox()
@@ -1329,44 +1550,44 @@ class SettingsDialog(QDialog):
         download_source_row = QHBoxLayout()
         download_source_row.addWidget(self.model_download_source_combo)
         download_source_row.addWidget(self.model_download_endpoint_input)
-        advanced_form.addRow("模型下载源", download_source_row)
+        advanced_form.addRow(_tr(self._ui_language, "模型下载源", "Model Download Source"), download_source_row)
 
-        self.debug_enabled_check = QCheckBox("显示并记录延迟指标")
+        self.debug_enabled_check = QCheckBox(_tr(self._ui_language, "显示并记录延迟指标", "Show and log latency metrics"))
         self.debug_enabled_check.setChecked(bool(getattr(self.debug_config, "enabled", False)))
         self.debug_enabled_check.stateChanged.connect(self._preview)
-        advanced_form.addRow("调试模式", self.debug_enabled_check)
+        advanced_form.addRow(_tr(self._ui_language, "调试模式", "Debug Mode"), self.debug_enabled_check)
 
         self.audio_device_combo = QComboBox()
         self.audio_device_combo.setToolTip("优先选择 [系统声音] 或 Loopback；普通麦克风通常录不到游戏声音")
-        self.refresh_audio_button = QPushButton("刷新")
+        self.refresh_audio_button = QPushButton(_tr(self._ui_language, "刷新", "Refresh"))
         self._fill_audio_devices()
         audio_row = QHBoxLayout()
         audio_row.addWidget(self.audio_device_combo)
         audio_row.addWidget(self.refresh_audio_button)
         self.audio_device_combo.currentIndexChanged.connect(self._preview)
         self.refresh_audio_button.clicked.connect(self._request_audio_refresh)
-        audio_form.addRow("音频设备", audio_row)
+        audio_form.addRow(_tr(self._ui_language, "音频设备", "Audio Device"), audio_row)
 
-        self.audio_test_panel = AudioTestPanel(self._current_audio_config, self)
-        audio_form.addRow("测试音频", self.audio_test_panel)
+        self.audio_test_panel = AudioTestPanel(self._current_audio_config, self, self._ui_language)
+        audio_form.addRow(_tr(self._ui_language, "测试音频", "Test Audio"), self.audio_test_panel)
 
         self.latency_mode_combo = QComboBox()
         self.latency_mode_combo.setToolTip("极速适合竞技游戏；均衡适合默认使用；准确适合直播、会议、慢节奏和口音较重的语音")
         self._fill_latency_modes()
         self.latency_mode_combo.currentIndexChanged.connect(self._latency_mode_changed)
-        audio_form.addRow("响应模式", self.latency_mode_combo)
+        audio_form.addRow(_tr(self._ui_language, "响应模式", "Response Mode"), self.latency_mode_combo)
 
         self.whisper_device_combo = QComboBox()
         self.whisper_device_combo.setToolTip("普通用户选 CPU；自动/GPU 需要本机有可用 NVIDIA CUDA 运行环境")
         self._fill_whisper_devices()
         self.whisper_device_combo.currentIndexChanged.connect(self._preview)
-        audio_form.addRow("识别设备", self.whisper_device_combo)
+        audio_form.addRow(_tr(self._ui_language, "识别设备", "Recognition Device"), self.whisper_device_combo)
 
         self.latency_hint_label = QLabel()
         self.latency_hint_label.setWordWrap(True)
         self.latency_hint_label.setMinimumHeight(42)
         self.latency_hint_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
-        advanced_form.addRow("识别调校", self.latency_hint_label)
+        advanced_form.addRow(_tr(self._ui_language, "识别调校", "Recognition Tuning"), self.latency_hint_label)
 
         self.max_speech_seconds_spin = QSpinBox()
         self.max_speech_seconds_spin.setRange(3, 30)
@@ -1376,7 +1597,7 @@ class SettingsDialog(QDialog):
         )
         self.max_speech_seconds_spin.setToolTip("连续有声超过这个时长会强制切成一段，推荐 6-10 秒")
         self.max_speech_seconds_spin.valueChanged.connect(self._preview)
-        advanced_form.addRow("最长捕获", self.max_speech_seconds_spin)
+        advanced_form.addRow(_tr(self._ui_language, "最长捕获", "Max Capture"), self.max_speech_seconds_spin)
 
         self.chunk_duration_spin = QSpinBox()
         self.chunk_duration_spin.setRange(60, 1000)
@@ -1385,7 +1606,7 @@ class SettingsDialog(QDialog):
         self.chunk_duration_spin.setValue(int(getattr(self.audio_config, "chunk_duration_ms", 220) or 220))
         self.chunk_duration_spin.setToolTip("单个音频块长度；越小响应越快，CPU/切段压力越高")
         self.chunk_duration_spin.valueChanged.connect(self._preview)
-        advanced_form.addRow("音频块", self.chunk_duration_spin)
+        advanced_form.addRow(_tr(self._ui_language, "音频块", "Audio Chunk"), self.chunk_duration_spin)
 
         self.speech_threshold_blocks_spin = QSpinBox()
         self.speech_threshold_blocks_spin.setRange(1, 20)
@@ -1394,14 +1615,14 @@ class SettingsDialog(QDialog):
         )
         self.speech_threshold_blocks_spin.setToolTip("连续多少个有声块后判定开始说话")
         self.speech_threshold_blocks_spin.valueChanged.connect(self._preview)
-        advanced_form.addRow("触发块数", self.speech_threshold_blocks_spin)
+        advanced_form.addRow(_tr(self._ui_language, "触发块数", "Trigger Blocks"), self.speech_threshold_blocks_spin)
 
         self.silence_limit_blocks_spin = QSpinBox()
         self.silence_limit_blocks_spin.setRange(1, 50)
         self.silence_limit_blocks_spin.setValue(int(getattr(self.audio_config, "silence_limit_blocks", 4) or 4))
         self.silence_limit_blocks_spin.setToolTip("连续多少个静音块后切出一段")
         self.silence_limit_blocks_spin.valueChanged.connect(self._preview)
-        advanced_form.addRow("静音块数", self.silence_limit_blocks_spin)
+        advanced_form.addRow(_tr(self._ui_language, "静音块数", "Silence Blocks"), self.silence_limit_blocks_spin)
 
         self.pre_roll_ms_spin = QSpinBox()
         self.pre_roll_ms_spin.setRange(0, 2000)
@@ -1410,7 +1631,7 @@ class SettingsDialog(QDialog):
         self.pre_roll_ms_spin.setValue(int(getattr(self.audio_config, "pre_roll_ms", 450) or 0))
         self.pre_roll_ms_spin.setToolTip("开始说话前保留的缓冲，太小可能丢句首")
         self.pre_roll_ms_spin.valueChanged.connect(self._preview)
-        advanced_form.addRow("句首缓冲", self.pre_roll_ms_spin)
+        advanced_form.addRow(_tr(self._ui_language, "句首缓冲", "Pre-roll"), self.pre_roll_ms_spin)
 
         self.speech_idle_timeout_ms_spin = QSpinBox()
         self.speech_idle_timeout_ms_spin.setRange(100, 3000)
@@ -1421,7 +1642,7 @@ class SettingsDialog(QDialog):
         )
         self.speech_idle_timeout_ms_spin.setToolTip("有语音缓冲但没有新音频块时，等待多久主动切段")
         self.speech_idle_timeout_ms_spin.valueChanged.connect(self._preview)
-        advanced_form.addRow("空闲切段", self.speech_idle_timeout_ms_spin)
+        advanced_form.addRow(_tr(self._ui_language, "空闲切段", "Idle Cut"), self.speech_idle_timeout_ms_spin)
 
         self.min_segment_seconds_spin = QDoubleSpinBox()
         self.min_segment_seconds_spin.setRange(0.0, 3.0)
@@ -1433,7 +1654,7 @@ class SettingsDialog(QDialog):
         )
         self.min_segment_seconds_spin.setToolTip("低于这个语音活跃时长的片段会在识别前丢弃；设为 0 可关闭")
         self.min_segment_seconds_spin.valueChanged.connect(self._preview)
-        advanced_form.addRow("最短语音", self.min_segment_seconds_spin)
+        advanced_form.addRow(_tr(self._ui_language, "最短语音", "Minimum Speech"), self.min_segment_seconds_spin)
 
         self.min_segment_peak_margin_spin = QDoubleSpinBox()
         self.min_segment_peak_margin_spin.setRange(0.0, 12.0)
@@ -1445,7 +1666,7 @@ class SettingsDialog(QDialog):
         )
         self.min_segment_peak_margin_spin.setToolTip("片段峰值至少要高过当前语音门限的 dB；设为 0 可关闭")
         self.min_segment_peak_margin_spin.valueChanged.connect(self._preview)
-        advanced_form.addRow("触发余量", self.min_segment_peak_margin_spin)
+        advanced_form.addRow(_tr(self._ui_language, "触发余量", "Trigger Margin"), self.min_segment_peak_margin_spin)
         self._refresh_latency_preset_controls()
 
         self.toggle_overlay_input = HotkeyCaptureEdit(self.hotkey_config.toggle_overlay)
@@ -1458,69 +1679,81 @@ class SettingsDialog(QDialog):
         self.clear_history_input.hotkey_changed.connect(self._hotkeys_changed)
         self.toggle_lock_input.hotkey_changed.connect(self._hotkeys_changed)
         self.toggle_compact_input.hotkey_changed.connect(self._hotkeys_changed)
-        hotkey_form.addRow("显示/隐藏", self.toggle_overlay_input)
-        hotkey_form.addRow("暂停/恢复", self.toggle_translation_input)
-        hotkey_form.addRow("清空历史", self.clear_history_input)
-        hotkey_form.addRow("锁定/解锁", self.toggle_lock_input)
-        hotkey_form.addRow("紧凑模式", self.toggle_compact_input)
+        hotkey_form.addRow(_tr(self._ui_language, "显示/隐藏", "Show / Hide"), self.toggle_overlay_input)
+        hotkey_form.addRow(_tr(self._ui_language, "暂停/恢复", "Pause / Resume"), self.toggle_translation_input)
+        hotkey_form.addRow(_tr(self._ui_language, "清空历史", "Clear Subtitles"), self.clear_history_input)
+        hotkey_form.addRow(_tr(self._ui_language, "锁定/解锁", "Lock / Unlock"), self.toggle_lock_input)
+        hotkey_form.addRow(_tr(self._ui_language, "紧凑模式", "Compact Mode"), self.toggle_compact_input)
 
         self.help_text_label = QLabel()
         self.help_text_label.setWordWrap(True)
         self.help_text_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        help_form.addRow("使用说明", self.help_text_label)
+        help_form.addRow(_tr(self._ui_language, "使用说明", "Guide"), self.help_text_label)
         self._refresh_help_text()
 
-        self.update_enabled_check = QCheckBox("每天自动检查")
+        self.update_enabled_check = QCheckBox(_tr(self._ui_language, "每天自动检查", "Check daily"))
         self.update_enabled_check.setChecked(bool(getattr(self.update_config, "enabled", True)))
         self.update_enabled_check.stateChanged.connect(self._preview)
         self.update_channel_combo = QComboBox()
         self._fill_update_channels()
         self.update_channel_combo.currentIndexChanged.connect(self._preview)
-        self.update_check_button = QPushButton("检查更新")
+        self.update_check_button = QPushButton(_tr(self._ui_language, "检查更新", "Check for Updates"))
         self.update_check_button.clicked.connect(self._request_update_check)
-        self.update_status_label = QLabel(f"当前版本：v{self.app_version or APP_VERSION}")
+        self.update_status_label = QLabel(_tr(
+            self._ui_language,
+            f"当前版本：v{self.app_version or APP_VERSION}",
+            f"Current version: v{self.app_version or APP_VERSION}",
+        ))
         self.update_status_label.setWordWrap(True)
         update_row = QHBoxLayout()
         update_row.addWidget(self.update_enabled_check)
         update_row.addWidget(self.update_channel_combo)
         update_row.addWidget(self.update_check_button)
         update_row.addWidget(self.update_status_label, 1)
-        about_name_label = QLabel(f"{APP_NAME} 游戏语音实时翻译浮窗")
+        about_name_label = QLabel(_tr(
+            self._ui_language,
+            f"{APP_NAME} 游戏语音实时翻译浮窗",
+            f"{APP_NAME} real-time game voice translation overlay",
+        ))
         about_name_label.setWordWrap(True)
         about_name_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         about_name_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         about_name_label.setMinimumWidth(0)
         about_name_label.setMinimumHeight(36)
-        about_form.addRow("软件", about_name_label)
+        about_form.addRow(_tr(self._ui_language, "软件", "App"), about_name_label)
 
         about_version_label = QLabel(f"v{self.app_version or APP_VERSION}")
         about_version_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        about_form.addRow("版本", about_version_label)
+        about_form.addRow(_tr(self._ui_language, "版本", "Version"), about_version_label)
 
         about_desc_label = QLabel(
-            "面向 PC 游戏、Discord 语音和直播字幕的开源工具，支持系统声音捕获、Whisper 识别、翻译浮窗和手机端同步。"
+            _tr(
+                self._ui_language,
+                "面向 PC 游戏、Discord 语音和直播字幕的开源工具，支持系统声音捕获、Whisper 识别、翻译浮窗和手机端同步。",
+                "An open-source tool for PC games, Discord voice, and live captions, with system audio capture, Whisper ASR, overlay subtitles, and mobile mirroring.",
+            )
         )
         about_desc_label.setWordWrap(True)
         about_desc_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         about_desc_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         about_desc_label.setMinimumWidth(0)
         about_desc_label.setMinimumHeight(64)
-        about_form.addRow("说明", about_desc_label)
+        about_form.addRow(_tr(self._ui_language, "说明", "Description"), about_desc_label)
 
         about_links_label = QLabel(
-            f'<a href="{APP_WEBSITE}">官网</a> · <a href="{GITHUB_URL}">GitHub</a> · '
+            f'<a href="{APP_WEBSITE}">Website</a> · <a href="{GITHUB_URL}">GitHub</a> · '
             f'<a href="{GITHUB_URL}/releases/latest">Release</a>'
         )
         about_links_label.setOpenExternalLinks(True)
         about_links_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
-        about_form.addRow("链接", about_links_label)
+        about_form.addRow(_tr(self._ui_language, "链接", "Links"), about_links_label)
 
-        about_form.addRow("检查更新", update_row)
+        about_form.addRow(_tr(self._ui_language, "检查更新", "Updates"), update_row)
         layout.addWidget(tabs, 1)
 
         action_row = QHBoxLayout()
-        feedback_button = QPushButton("提交反馈")
-        close_button = QPushButton("关闭")
+        feedback_button = QPushButton(_tr(self._ui_language, "提交反馈", "Submit Feedback"))
+        close_button = QPushButton(_tr(self._ui_language, "关闭", "Close"))
         feedback_button.clicked.connect(self._open_feedback_dialog)
         close_button.clicked.connect(self.close)
         action_row.addWidget(feedback_button)
@@ -1542,6 +1775,32 @@ class SettingsDialog(QDialog):
         tabs.addTab(page, title)
         return form
 
+    def _fill_ui_languages(self):
+        self.ui_language_combo.blockSignals(True)
+        self.ui_language_combo.clear()
+        selected = normalize_ui_language(getattr(self.app_config, "language", UI_LANGUAGE_ZH))
+        selected_row = 0
+        for row, (code, label) in enumerate(UI_LANGUAGE_OPTIONS):
+            self.ui_language_combo.addItem(label, code)
+            if code == selected:
+                selected_row = row
+        self.ui_language_combo.setCurrentIndex(selected_row)
+        self.ui_language_combo.blockSignals(False)
+
+    def _ui_language_changed(self, *args):
+        self.app_config.language = normalize_ui_language(self.ui_language_combo.currentData())
+        self._ui_language = self.app_config.language
+        if hasattr(self, "audio_test_panel"):
+            self.audio_test_panel.set_ui_language(self._ui_language)
+        self._fill_whisper_devices()
+        self._fill_model_download_sources()
+        self._fill_latency_modes()
+        self._fill_update_channels()
+        self._refresh_translation_provider_ui()
+        self._refresh_latency_preset_controls()
+        self._refresh_help_text()
+        self._preview()
+
     def closeEvent(self, event):
         if hasattr(self, "audio_test_panel"):
             self.audio_test_panel.stop_test()
@@ -1551,7 +1810,7 @@ class SettingsDialog(QDialog):
     def _fill_audio_devices(self):
         self.audio_device_combo.blockSignals(True)
         self.audio_device_combo.clear()
-        self.audio_device_combo.addItem("自动选择", None)
+        self.audio_device_combo.addItem(_tr(self._ui_language, "自动选择", "Auto select"), None)
         selected_row = 0
         selected_index = self.audio_config.input_device_index
         selected_name = (self.audio_config.input_device_name or "").strip()
@@ -1562,7 +1821,10 @@ class SettingsDialog(QDialog):
             device_id = (device.get("device_id") or "").strip()
             sample_rate = device.get("sample_rate") or 0
             channels = device.get("channels") or 0
-            device_type = "系统声音" if device.get("is_loopback") else "输入设备"
+            if is_english_ui(self._ui_language):
+                device_type = "System audio" if device.get("is_loopback") else "Input"
+            else:
+                device_type = "系统声音" if device.get("is_loopback") else "输入设备"
             label = f"[{device_type}] [{index}] {name} ({sample_rate}Hz/{channels}ch)"
             self.audio_device_combo.addItem(label, device)
             if selected_device_id and selected_device_id == device_id:
@@ -1579,7 +1841,7 @@ class SettingsDialog(QDialog):
         self.whisper_device_combo.clear()
         selected_device = _normalize_whisper_device(getattr(self.whisper_config, "device", "cpu"))
         selected_row = 0
-        for row, (device, label) in enumerate(WHISPER_DEVICE_OPTIONS):
+        for row, (device, label) in enumerate(_whisper_device_options(self._ui_language)):
             self.whisper_device_combo.addItem(label, device)
             if device == selected_device:
                 selected_row = row
@@ -1593,11 +1855,8 @@ class SettingsDialog(QDialog):
             getattr(self.whisper_config, "model_download_source", "modelscope"),
             getattr(self.whisper_config, "model_download_endpoint", ""),
         )
-        selected_endpoint = _normalize_model_download_endpoint(
-            getattr(self.whisper_config, "model_download_endpoint", "")
-        )
         selected_row = 0
-        for row, (source, label) in enumerate(WHISPER_DOWNLOAD_SOURCE_OPTIONS):
+        for row, (source, label) in enumerate(_model_download_source_options(self._ui_language)):
             self.model_download_source_combo.addItem(label, source)
             if source == selected_source:
                 selected_row = row
@@ -1610,7 +1869,7 @@ class SettingsDialog(QDialog):
         self.latency_mode_combo.clear()
         selected_mode = normalize_latency_mode(getattr(self.audio_config, "latency_mode", LATENCY_MODE_BALANCED))
         selected_row = 0
-        for row, (mode, label) in enumerate(AUDIO_LATENCY_MODE_OPTIONS):
+        for row, (mode, label) in enumerate(_audio_latency_mode_options(self._ui_language)):
             self.latency_mode_combo.addItem(label, mode)
             if mode == selected_mode:
                 selected_row = row
@@ -1628,9 +1887,17 @@ class SettingsDialog(QDialog):
         is_custom = mode == LATENCY_MODE_CUSTOM
         if hasattr(self, "latency_hint_label"):
             if is_custom:
-                self.latency_hint_label.setText("当前为自定义模式。\n可以调整下面的识别切段参数。")
+                self.latency_hint_label.setText(_tr(
+                    self._ui_language,
+                    "当前为自定义模式。\n可以调整下面的识别切段参数。",
+                    "Custom mode is enabled.\nYou can adjust the recognition segmentation parameters below.",
+                ))
             else:
-                self.latency_hint_label.setText("切段参数由响应模式预设控制。\n要修改请到“语音”页改为“自定义”。")
+                self.latency_hint_label.setText(_tr(
+                    self._ui_language,
+                    "切段参数由响应模式预设控制。\n要修改请到“语音”页改为“自定义”。",
+                    "These segmentation parameters are controlled by the response-mode preset.\nSwitch Response Mode to Custom on the Speech tab before editing them.",
+                ))
         controls = (
             ("chunk_duration_ms", "chunk_duration_spin", int),
             ("speech_threshold_blocks", "speech_threshold_blocks_spin", int),
@@ -1681,7 +1948,7 @@ class SettingsDialog(QDialog):
         self.update_channel_combo.clear()
         selected_channel = normalize_update_channel(getattr(self.update_config, "channel", "stable"))
         selected_row = 0
-        for row, (channel, label) in enumerate(UPDATE_CHANNEL_OPTIONS):
+        for row, (channel, label) in enumerate(_update_channel_options(self._ui_language)):
             self.update_channel_combo.addItem(label, channel)
             if channel == selected_channel:
                 selected_row = row
@@ -1699,27 +1966,53 @@ class SettingsDialog(QDialog):
         is_google = provider == "google"
         if hasattr(self, "api_key_input"):
             self.api_key_input.setPlaceholderText(
-                "Google Cloud Translation API Key" if is_google else "OpenAI 兼容 API Key"
+                "Google Cloud Translation API Key"
+                if is_google
+                else _tr(self._ui_language, "OpenAI 兼容 API Key", "OpenAI-compatible API Key")
             )
             self.api_key_input.setToolTip(
-                "Google Cloud 项目中启用 Cloud Translation API 后创建的 API Key"
+                _tr(
+                    self._ui_language,
+                    "Google Cloud 项目中启用 Cloud Translation API 后创建的 API Key",
+                    "API Key created after enabling Cloud Translation API in a Google Cloud project",
+                )
                 if is_google
-                else "硅基流动、DeepSeek、Qwen、GLM 或本地兼容服务的 API Key；本地服务不需要时可留空"
+                else _tr(
+                    self._ui_language,
+                    "硅基流动、DeepSeek、Qwen、GLM 或本地兼容服务的 API Key；本地服务不需要时可留空",
+                    "API Key for SiliconFlow, DeepSeek, Qwen, GLM, or a local compatible service; leave blank when your local service does not need it",
+                )
             )
         for widget in (getattr(self, "model_input", None), getattr(self, "endpoint_input", None)):
             if widget:
                 widget.setEnabled(not is_google)
         if hasattr(self, "model_input"):
             self.model_input.setToolTip(
-                "Google Cloud Translation Basic v2 不需要模型名"
+                _tr(
+                    self._ui_language,
+                    "Google Cloud Translation Basic v2 不需要模型名",
+                    "Google Cloud Translation Basic v2 does not need a model name",
+                )
                 if is_google
-                else "填写服务商要求的模型名，例如 tencent/Hunyuan-MT-7B、deepseek-chat、qwen-plus、glm-4-flash"
+                else _tr(
+                    self._ui_language,
+                    "填写服务商要求的模型名，例如 tencent/Hunyuan-MT-7B、deepseek-chat、qwen-plus、glm-4-flash",
+                    "Enter the model name required by your provider, such as tencent/Hunyuan-MT-7B, deepseek-chat, qwen-plus, or glm-4-flash",
+                )
             )
         if hasattr(self, "endpoint_input"):
             self.endpoint_input.setToolTip(
-                "Google Cloud Translation Basic v2 使用固定官方接口，不需要填写兼容地址"
+                _tr(
+                    self._ui_language,
+                    "Google Cloud Translation Basic v2 使用固定官方接口，不需要填写兼容地址",
+                    "Google Cloud Translation Basic v2 uses the official endpoint; no compatible endpoint is needed",
+                )
                 if is_google
-                else "填写 OpenAI 兼容地址；可填完整 /chat/completions URL，也可填以 /v1 结尾的 base_url"
+                else _tr(
+                    self._ui_language,
+                    "填写 OpenAI 兼容地址；可填完整 /chat/completions URL，也可填以 /v1 结尾的 base_url",
+                    "Enter an OpenAI-compatible endpoint; a full /chat/completions URL or a /v1 base URL both work",
+                )
             )
 
     def set_audio_devices(self, audio_devices: List[dict], audio_config: AudioDeviceConfig):
@@ -1776,6 +2069,7 @@ class SettingsDialog(QDialog):
             self.audio_config,
             self.translation_config,
             self.whisper_config,
+            self.app_config,
             self.update_config,
         )
         parent = self.parent()
@@ -1786,9 +2080,13 @@ class SettingsDialog(QDialog):
         if not hasattr(self, "update_check_button"):
             return
         self.update_check_button.setEnabled(not checking)
-        self.update_check_button.setText("检查中..." if checking else "检查更新")
+        self.update_check_button.setText(_tr(
+            self._ui_language,
+            "检查中..." if checking else "检查更新",
+            "Checking..." if checking else "Check for Updates",
+        ))
         if checking:
-            self.update_status_label.setText("正在检查更新...")
+            self.update_status_label.setText(_tr(self._ui_language, "正在检查更新...", "Checking for updates..."))
 
     def set_update_check_result(self, result: UpdateCheckResult):
         if not hasattr(self, "update_check_button"):
@@ -1799,24 +2097,40 @@ class SettingsDialog(QDialog):
     def show_pending_update(self, update: UpdateInfo):
         if not hasattr(self, "update_status_label") or not update:
             return
-        self.update_status_label.setText(f"发现新版本：{update.display_title()}")
+        self.update_status_label.setText(_tr(
+            self._ui_language,
+            f"发现新版本：{update.display_title()}",
+            f"New version available: {update.display_title()}",
+        ))
 
     def _format_update_status(self, result: UpdateCheckResult) -> str:
         status = getattr(result, "status", "")
         update = getattr(result, "update", None)
         if status == "available" and update:
-            return f"发现新版本：{update.display_title()}"
+            return _tr(
+                self._ui_language,
+                f"发现新版本：{update.display_title()}",
+                f"New version available: {update.display_title()}",
+            )
         if status == "current":
-            return "当前已是最新版本"
+            return _tr(self._ui_language, "当前已是最新版本", "You are on the latest version")
         if status == "ignored" and update:
-            return f"已忽略 v{update.latest}"
+            return _tr(self._ui_language, f"已忽略 v{update.latest}", f"Ignored v{update.latest}")
         if status == "channel_mismatch":
-            return result.message or "当前通道没有新版本"
+            return result.message or _tr(self._ui_language, "当前通道没有新版本", "No update on the current channel")
         if status == "disabled":
-            return "已关闭自动检查更新"
+            return _tr(self._ui_language, "已关闭自动检查更新", "Automatic update checks are disabled")
         if status == "error":
-            return f"检查失败：{(result.message or '')[:160]}"
-        return result.message or f"当前版本：v{self.app_version or APP_VERSION}"
+            return _tr(
+                self._ui_language,
+                f"检查失败：{(result.message or '')[:160]}",
+                f"Check failed: {(result.message or '')[:160]}",
+            )
+        return result.message or _tr(
+            self._ui_language,
+            f"当前版本：v{self.app_version or APP_VERSION}",
+            f"Current version: v{self.app_version or APP_VERSION}",
+        )
 
     def _current_audio_config(self) -> AudioConfig:
         self._collect_values()
@@ -1825,8 +2139,12 @@ class SettingsDialog(QDialog):
     def _test_translation(self):
         self._collect_values()
         self.translation_test_button.setEnabled(False)
-        self.translation_test_button.setText("测试中...")
-        self.translation_test_label.setText("正在测试翻译接口...")
+        self.translation_test_button.setText(_tr(self._ui_language, "测试中...", "Testing..."))
+        self.translation_test_label.setText(_tr(
+            self._ui_language,
+            "正在测试翻译接口...",
+            "Testing the translation endpoint...",
+        ))
         self._translation_test_runner = TranslationTestRunner(
             self.translation_config,
             self._handle_translation_test_result,
@@ -1834,9 +2152,13 @@ class SettingsDialog(QDialog):
         self._translation_test_runner.start()
 
     def _handle_translation_test_result(self, ok: bool, message: str):
-        prefix = "成功" if ok else "失败"
-        self.translation_test_label.setText(f"{prefix}：{message}")
-        _start_button_cooldown(self.translation_test_button, "测试翻译")
+        prefix = _tr(self._ui_language, "成功", "Success") if ok else _tr(self._ui_language, "失败", "Failed")
+        separator = ": " if is_english_ui(self._ui_language) else "："
+        self.translation_test_label.setText(f"{prefix}{separator}{message}")
+        _start_button_cooldown(
+            self.translation_test_button,
+            _tr(self._ui_language, "测试翻译", "Test Translation"),
+        )
 
     def _hotkeys_changed(self, *args):
         self.hotkey_config.toggle_overlay = self.toggle_overlay_input.text().strip()
@@ -1849,11 +2171,11 @@ class SettingsDialog(QDialog):
 
     def _refresh_help_text(self):
         if hasattr(self, "help_text_label"):
-            self.help_text_label.setText(_build_help_text(self.hotkey_config))
+            self.help_text_label.setText(_build_help_text(self.hotkey_config, self._ui_language))
 
     def _open_feedback_dialog(self):
         self._collect_values()
-        self._feedback_dialog = FeedbackDialog(self._build_feedback_report(), self)
+        self._feedback_dialog = FeedbackDialog(self._build_feedback_report(), self._ui_language, self)
         self._feedback_dialog.show()
 
     def _build_feedback_report(self) -> str:
@@ -1866,6 +2188,7 @@ class SettingsDialog(QDialog):
             self.runtime_dir,
             self.last_latency_summary,
             selected_device,
+            self._ui_language,
         )
 
     def _preview(self, *args):
@@ -1876,6 +2199,7 @@ class SettingsDialog(QDialog):
             self.audio_config,
             self.translation_config,
             self.whisper_config,
+            self.app_config,
             self.update_config,
         )
 
@@ -1887,6 +2211,8 @@ class SettingsDialog(QDialog):
         self.overlay_config.original_text_color = self.original_color_btn.color()
         self.overlay_config.show_original = self.show_original_check.isChecked()
         self.overlay_config.compact_mode = self.compact_mode_check.isChecked()
+        self.app_config.language = normalize_ui_language(self.ui_language_combo.currentData())
+        self._ui_language = self.app_config.language
 
         self.hotkey_config.toggle_overlay = self.toggle_overlay_input.text().strip()
         self.hotkey_config.toggle_translation = self.toggle_translation_input.text().strip()
@@ -1978,7 +2304,12 @@ class GameOverlay(QWidget):
         app_version: str = "",
         runtime_dir: str = "",
         get_last_latency_summary: Optional[Callable[[], dict]] = None,
-        on_settings_changed: Optional[Callable[[OverlayConfig, HotkeyConfig, AudioDeviceConfig, TranslationConfig, object, UpdateSettings], None]] = None,
+        on_settings_changed: Optional[
+            Callable[
+                [OverlayConfig, HotkeyConfig, AudioDeviceConfig, TranslationConfig, object, RuntimeConfig, UpdateSettings],
+                None,
+            ]
+        ] = None,
         on_audio_devices_refresh: Optional[Callable[[], List[dict]]] = None,
         on_update_check_requested: Optional[Callable[[bool], None]] = None,
         on_update_version_ignored: Optional[Callable[[str], None]] = None,
@@ -1993,6 +2324,7 @@ class GameOverlay(QWidget):
         self.audio_devices = audio_devices or []
         self.whisper_config = whisper_config or WhisperDeviceConfig()
         self.app_config = app_config or RuntimeConfig()
+        self.app_config.language = normalize_ui_language(getattr(self.app_config, "language", UI_LANGUAGE_ZH))
         self.debug_config = debug_config or DebugConfig()
         self.update_config = update_config or UpdateSettings()
         self.app_version = app_version or APP_VERSION
@@ -2027,6 +2359,9 @@ class GameOverlay(QWidget):
         self._init_ui()
         self._connect_signals()
 
+    def _ui_language(self) -> str:
+        return normalize_ui_language(getattr(self.app_config or RuntimeConfig(), "language", UI_LANGUAGE_ZH))
+
     def _init_ui(self):
         """初始化界面"""
         # 窗口属性
@@ -2058,20 +2393,21 @@ class GameOverlay(QWidget):
         toolbar_layout.setSpacing(6)
         self._toolbar.setLayout(toolbar_layout)
 
-        self._source_lang_combo = self._create_language_combo("识别语言")
+        ui_language = self._ui_language()
+        self._source_lang_combo = self._create_language_combo(_tr(ui_language, "识别语言", "Recognition Language"))
         self._source_lang_combo.setObjectName("languageCombo")
         toolbar_layout.addWidget(self._source_lang_combo)
 
         self._swap_lang_button = QToolButton()
         self._swap_lang_button.setObjectName("languageSwapButton")
         self._swap_lang_button.setIcon(_make_icon("swap", self.config.original_text_color))
-        self._swap_lang_button.setToolTip("交换识别语言和翻译目标语言")
+        self._swap_lang_button.setToolTip(_tr(ui_language, "交换识别语言和翻译目标语言", "Swap recognition and target languages"))
         self._swap_lang_button.setFixedSize(28, 24)
         self._swap_lang_button.setCursor(Qt.PointingHandCursor)
         self._swap_lang_button.clicked.connect(self._swap_language_flow)
         toolbar_layout.addWidget(self._swap_lang_button)
 
-        self._target_lang_combo = self._create_language_combo("翻译目标语言")
+        self._target_lang_combo = self._create_language_combo(_tr(ui_language, "翻译目标语言", "Target Language"))
         self._target_lang_combo.setObjectName("languageCombo")
         toolbar_layout.addWidget(self._target_lang_combo)
         self._sync_language_controls()
@@ -2090,7 +2426,7 @@ class GameOverlay(QWidget):
         self._qr_button = QToolButton()
         self._qr_button.setObjectName("qrButton")
         self._qr_button.setIcon(_make_icon("qr", self.config.text_color))
-        self._qr_button.setToolTip("手机二维码")
+        self._qr_button.setToolTip(_tr(ui_language, "手机二维码", "Mobile QR Code"))
         self._qr_button.setFixedSize(28, 24)
         self._qr_button.setCursor(Qt.PointingHandCursor)
         self._qr_button.installEventFilter(self)
@@ -2099,7 +2435,7 @@ class GameOverlay(QWidget):
         self._settings_button = QToolButton()
         self._settings_button.setObjectName("settingsButton")
         self._settings_button.setIcon(_make_icon("settings", self.config.text_color))
-        self._settings_button.setToolTip("浮窗设置")
+        self._settings_button.setToolTip(_tr(ui_language, "浮窗设置", "Overlay Settings"))
         self._settings_button.setFixedSize(28, 24)
         self._settings_button.setCursor(Qt.PointingHandCursor)
         self._settings_button.clicked.connect(self._open_settings)
@@ -2115,7 +2451,7 @@ class GameOverlay(QWidget):
         self._quit_button = QToolButton()
         self._quit_button.setObjectName("quitButton")
         self._quit_button.setIcon(_make_icon("close", self.config.text_color))
-        self._quit_button.setToolTip("退出程序")
+        self._quit_button.setToolTip(_tr(ui_language, "退出程序", "Quit"))
         self._quit_button.setFixedSize(28, 24)
         self._quit_button.setCursor(Qt.PointingHandCursor)
         self._quit_button.clicked.connect(self._request_shutdown)
@@ -2311,10 +2647,19 @@ class GameOverlay(QWidget):
         combo = QComboBox()
         combo.setToolTip(tooltip)
         combo.setCursor(Qt.PointingHandCursor)
-        for code, label in LANGUAGE_OPTIONS:
+        for code, label in _speech_language_options(self._ui_language()):
             combo.addItem(label, code)
         self._fit_language_combo_width(combo)
         return combo
+
+    def _refresh_language_combo_items(self, combo: QComboBox, current: str):
+        combo.blockSignals(True)
+        combo.clear()
+        for code, label in _speech_language_options(self._ui_language()):
+            combo.addItem(label, code)
+        self._set_combo_language(combo, current)
+        self._fit_language_combo_width(combo)
+        combo.blockSignals(False)
 
     def _fit_language_combo_width(self, combo: QComboBox):
         combo.ensurePolished()
@@ -2335,6 +2680,8 @@ class GameOverlay(QWidget):
         self.translation_config.target_lang = target
         self._syncing_language_controls = True
         try:
+            self._refresh_language_combo_items(self._source_lang_combo, source)
+            self._refresh_language_combo_items(self._target_lang_combo, target)
             self._set_combo_language(self._source_lang_combo, source)
             self._set_combo_language(self._target_lang_combo, target)
             self._fit_language_combo_width(self._source_lang_combo)
@@ -2382,6 +2729,7 @@ class GameOverlay(QWidget):
                 self.audio_config,
                 self.translation_config,
                 self.whisper_config,
+                self.app_config,
                 self.update_config,
             )
 
@@ -2393,14 +2741,27 @@ class GameOverlay(QWidget):
         self._qr_popup.adjustSize()
 
     def _refresh_control_state(self):
+        ui_language = self._ui_language()
         if hasattr(self, "_compact_button"):
             compact = bool(getattr(self.config, "compact_mode", False))
             self._compact_button.setIcon(_make_icon("expand" if compact else "compact", self.config.text_color))
-            self._compact_button.setToolTip("退出紧凑浮窗" if compact else "紧凑浮窗")
+            self._compact_button.setToolTip(_tr(
+                ui_language,
+                "退出紧凑浮窗" if compact else "紧凑浮窗",
+                "Exit compact overlay" if compact else "Compact overlay",
+            ))
         if hasattr(self, "_qr_button"):
-            self._qr_button.setToolTip("手机二维码")
+            self._qr_button.setToolTip(_tr(ui_language, "手机二维码", "Mobile QR Code"))
         if hasattr(self, "_settings_button"):
-            self._settings_button.setToolTip("浮窗设置")
+            self._settings_button.setToolTip(_tr(ui_language, "浮窗设置", "Overlay Settings"))
+        if hasattr(self, "_swap_lang_button"):
+            self._swap_lang_button.setToolTip(_tr(ui_language, "交换识别语言和翻译目标语言", "Swap recognition and target languages"))
+        if hasattr(self, "_source_lang_combo"):
+            self._source_lang_combo.setToolTip(_tr(ui_language, "识别语言", "Recognition Language"))
+        if hasattr(self, "_target_lang_combo"):
+            self._target_lang_combo.setToolTip(_tr(ui_language, "翻译目标语言", "Target Language"))
+        if hasattr(self, "_quit_button"):
+            self._quit_button.setToolTip(_tr(ui_language, "退出程序", "Quit"))
 
     def set_paused(self, paused: bool):
         self._paused = bool(paused)
@@ -2453,7 +2814,7 @@ class GameOverlay(QWidget):
             self._fullscreen_help_dialog.raise_()
             self._fullscreen_help_dialog.activateWindow()
             return
-        self._fullscreen_help_dialog = FullscreenHelpDialog(self.hotkeys, self)
+        self._fullscreen_help_dialog = FullscreenHelpDialog(self.hotkeys, self._ui_language(), self)
         self._fullscreen_help_dialog.show()
         self._fullscreen_help_dialog.raise_()
         self._fullscreen_help_dialog.activateWindow()
@@ -2568,6 +2929,30 @@ class GameOverlay(QWidget):
         if on_completed:
             on_completed()
 
+    def refresh_language(self):
+        self._sync_language_controls()
+        self._refresh_control_state()
+        self._refresh_lock_state()
+        if self._fullscreen_help_dialog and self._fullscreen_help_dialog.isVisible():
+            self._fullscreen_help_dialog.close()
+            self._fullscreen_help_dialog = None
+        if self._settings_dialog and self._settings_dialog.isVisible():
+            old_dialog = self._settings_dialog
+            tab_index = 0
+            tabs = old_dialog.findChild(QTabWidget)
+            if tabs:
+                tab_index = tabs.currentIndex()
+            old_dialog.close()
+            self._settings_dialog = None
+            QTimer.singleShot(0, lambda index=tab_index: self._reopen_settings_at(index))
+
+    def _reopen_settings_at(self, tab_index: int):
+        self._open_settings()
+        if self._settings_dialog:
+            tabs = self._settings_dialog.findChild(QTabWidget)
+            if tabs:
+                tabs.setCurrentIndex(max(0, min(int(tab_index or 0), tabs.count() - 1)))
+
     def _current_latency_summary(self) -> dict:
         if self._get_last_latency_summary:
             try:
@@ -2610,7 +2995,11 @@ class GameOverlay(QWidget):
 
         self._lock_button.setChecked(locked)
         self._lock_button.setIcon(_make_icon("unlock" if locked else "lock", self.config.text_color))
-        self._lock_button.setToolTip("解锁浮窗" if locked else "锁定浮窗")
+        self._lock_button.setToolTip(_tr(
+            self._ui_language(),
+            "解锁浮窗" if locked else "锁定浮窗",
+            "Unlock overlay" if locked else "Lock overlay",
+        ))
         self._style_lock_button()
         self._set_overlay_mouse_passthrough(locked)
         self._position_lock_button()
@@ -2734,6 +3123,7 @@ class GameOverlay(QWidget):
             update,
             self.app_version,
             self._ignore_update_version,
+            self._ui_language(),
             self,
         )
         self._update_prompt_dialog.show()
@@ -2759,6 +3149,7 @@ class GameOverlay(QWidget):
                 self.audio_config,
                 self.translation_config,
                 self.whisper_config,
+                self.app_config,
                 self.update_config,
             )
 
@@ -2769,6 +3160,7 @@ class GameOverlay(QWidget):
         audio_config: AudioDeviceConfig,
         translation_config: TranslationConfig,
         whisper_config,
+        app_config: RuntimeConfig,
         update_config,
     ):
         self._remember_window_geometry()
@@ -2781,6 +3173,8 @@ class GameOverlay(QWidget):
         self.audio_config = audio_config
         self.translation_config = translation_config
         self.whisper_config = whisper_config
+        self.app_config = app_config or self.app_config or RuntimeConfig()
+        self.app_config.language = normalize_ui_language(getattr(self.app_config, "language", UI_LANGUAGE_ZH))
         self.update_config = update_config or self.update_config
         self.setWindowOpacity(self.config.opacity)
         self._apply_styles()
@@ -2801,6 +3195,7 @@ class GameOverlay(QWidget):
                 self.audio_config,
                 self.translation_config,
                 self.whisper_config,
+                self.app_config,
                 self.update_config,
             )
 

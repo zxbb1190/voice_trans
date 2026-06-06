@@ -1,17 +1,17 @@
 {
-  "latest": "0.2.2",
+  "latest": "0.2.3",
   "channel": "stable",
-  "title": "VoxGo v0.2.2",
+  "title": "VoxGo v0.2.3",
   "notes": [
-    "新增极速、均衡、准确和自定义响应模式，可按竞技游戏、默认使用或直播会议场景切换低延迟与完整度。",
-    "设置窗口改为外观、翻译、语音、高级、说明、快捷键、关于等标签页，检查更新和版本信息移入关于页。",
-    "新增紧凑浮窗、系统托盘控制、全屏兼容说明、锁定/解锁和紧凑模式可选快捷键，并记忆浮窗大小与位置。",
-    "优化语音片段过滤和识别结果清理，减少噪声片段、幻听文本和切换响应模式后无字幕的问题。"
+    "新增英文官网 /en/，补充 Open-source、无游戏进程注入、系统声音捕获、本地 Whisper 识别和手机同步等英文说明。",
+    "设置中新增 Language 选项，支持简体中文和 English，并保存到本机用户设置。",
+    "浮窗工具条、设置页、说明、关于、更新提示、反馈模板和系统托盘等关键界面新增英文文案。",
+    "修复语言配置切换和设置保存链路，确保界面语言变更后主要入口即时刷新。"
   ],
-  "release_url": "https://github.com/zxbb1190/VoxGo_game_voice_trans/releases/tag/v0.2.2",
-  "download_lite_url": "https://github.com/zxbb1190/VoxGo_game_voice_trans/releases/download/v0.2.2/VoxGo-v0.2.2-lite.zip",
-  "download_full_url": "https://github.com/zxbb1190/VoxGo_game_voice_trans/releases/download/v0.2.2/VoxGo-v0.2.2-full.zip",
-  "sha256_lite": "d1a63d7fc2bcae18afe56ab251ea47de946afd2446d15ec1654332d402f7b946",
-  "sha256_full": "98bb9e39acf4a6cd0c189d7110761a41bf2888d72243ceacd747c1fb98f23ade",
+  "release_url": "https://github.com/zxbb1190/VoxGo_game_voice_trans/releases/tag/v0.2.3",
+  "download_lite_url": "https://github.com/zxbb1190/VoxGo_game_voice_trans/releases/download/v0.2.3/VoxGo-v0.2.3-lite.zip",
+  "download_full_url": "https://github.com/zxbb1190/VoxGo_game_voice_trans/releases/download/v0.2.3/VoxGo-v0.2.3-full.zip",
+  "sha256_lite": "4e18f5dd373f40e6266b889f93ed75d0fb603829743fa810631f4cf83b79d9f0",
+  "sha256_full": "e4ae9604ac1abe4a6d0abb65f258fde0e6b9aefaba0f1399200befdd9645fb57",
   "mandatory": false
 }

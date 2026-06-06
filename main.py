@@ -61,6 +61,13 @@ from update_checker import (
     normalize_update_channel,
     should_check_for_update,
 )
+from i18n import (
+    UI_LANGUAGE_ZH,
+    is_english_ui,
+    language_label,
+    normalize_ui_language,
+    ui_text,
+)
 
 
 LANGUAGE_ALIASES = {
@@ -113,6 +120,14 @@ def _hotkey_label(value: str) -> str:
     return str(value or "").strip() or "未设置"
 
 
+def _language_name(code: str, ui_language: str = UI_LANGUAGE_ZH) -> str:
+    return language_label(code, ui_language)
+
+
+def _ui_language_of(config) -> str:
+    return normalize_ui_language(getattr(getattr(config, "app", None), "language", UI_LANGUAGE_ZH))
+
+
 @dataclass
 class OverlayConfig:
     font_size: int = 16
@@ -148,6 +163,7 @@ class HotkeyConfig:
 @dataclass
 class RuntimeConfig:
     setup_completed: bool = False
+    language: str = UI_LANGUAGE_ZH
 
 
 @dataclass
@@ -355,6 +371,9 @@ class VoxGoApp:
             config.whisper.model_download_source = MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT
 
     def _migrate_runtime_defaults(self, config: AppConfig, preserve_existing_audio_tuning: bool = True):
+        if not getattr(config, "app", None):
+            config.app = RuntimeConfig()
+        config.app.language = normalize_ui_language(getattr(config.app, "language", UI_LANGUAGE_ZH))
         if not getattr(config, "update", None):
             config.update = UpdateSettings()
         try:
@@ -490,6 +509,7 @@ class VoxGoApp:
         data = {
             "app": {
                 "setup_completed": bool(getattr(self.config.app, "setup_completed", False)),
+                "language": normalize_ui_language(getattr(self.config.app, "language", UI_LANGUAGE_ZH)),
             },
             "audio": {
                 "latency_mode": self.config.audio.latency_mode,
@@ -1120,18 +1140,19 @@ class VoxGoApp:
         self._tray_icon = tray_cls(getattr(self, "_app_icon", None) or self._qt_app.windowIcon(), self._qt_app)
         self._tray_icon.setToolTip(f"{APP_NAME} v{APP_VERSION}")
         self._tray_menu = menu_cls(self._qt_app.activeWindow())
+        ui_language = _ui_language_of(self.config)
 
         self._tray_actions = {
-            "toggle_overlay": self._tray_menu.addAction("隐藏浮窗"),
-            "toggle_translation": self._tray_menu.addAction("暂停翻译"),
-            "clear_history": self._tray_menu.addAction("清空字幕"),
-            "compact_mode": self._tray_menu.addAction("启用紧凑浮窗"),
+            "toggle_overlay": self._tray_menu.addAction(ui_text(ui_language, "隐藏浮窗", "Hide Overlay")),
+            "toggle_translation": self._tray_menu.addAction(ui_text(ui_language, "暂停翻译", "Pause Translation")),
+            "clear_history": self._tray_menu.addAction(ui_text(ui_language, "清空字幕", "Clear Subtitles")),
+            "compact_mode": self._tray_menu.addAction(ui_text(ui_language, "启用紧凑浮窗", "Enable Compact Overlay")),
         }
         self._tray_menu.addSeparator()
-        self._tray_actions["settings"] = self._tray_menu.addAction("设置")
-        self._tray_actions["fullscreen_help"] = self._tray_menu.addAction("全屏兼容说明")
+        self._tray_actions["settings"] = self._tray_menu.addAction(ui_text(ui_language, "设置", "Settings"))
+        self._tray_actions["fullscreen_help"] = self._tray_menu.addAction(ui_text(ui_language, "全屏兼容说明", "Fullscreen Compatibility"))
         self._tray_menu.addSeparator()
-        self._tray_actions["quit"] = self._tray_menu.addAction("退出")
+        self._tray_actions["quit"] = self._tray_menu.addAction(ui_text(ui_language, "退出", "Quit"))
 
         self._tray_actions["toggle_overlay"].triggered.connect(self._tray_toggle_overlay)
         self._tray_actions["toggle_translation"].triggered.connect(self._toggle_translation)
@@ -1148,15 +1169,41 @@ class VoxGoApp:
     def _sync_tray_state(self):
         if not self._tray_actions:
             return
+        ui_language = _ui_language_of(self.config)
         if "toggle_overlay" in self._tray_actions and self._overlay:
-            self._tray_actions["toggle_overlay"].setText("隐藏浮窗" if self._overlay.isVisible() else "显示浮窗")
+            self._tray_actions["toggle_overlay"].setText(ui_text(
+                ui_language,
+                "隐藏浮窗" if self._overlay.isVisible() else "显示浮窗",
+                "Hide Overlay" if self._overlay.isVisible() else "Show Overlay",
+            ))
         if "toggle_translation" in self._tray_actions:
-            self._tray_actions["toggle_translation"].setText("恢复翻译" if self._paused else "暂停翻译")
+            self._tray_actions["toggle_translation"].setText(ui_text(
+                ui_language,
+                "恢复翻译" if self._paused else "暂停翻译",
+                "Resume Translation" if self._paused else "Pause Translation",
+            ))
         if "compact_mode" in self._tray_actions:
             compact = bool(getattr(self.config.overlay, "compact_mode", False))
-            self._tray_actions["compact_mode"].setText("退出紧凑浮窗" if compact else "启用紧凑浮窗")
+            self._tray_actions["compact_mode"].setText(ui_text(
+                ui_language,
+                "退出紧凑浮窗" if compact else "启用紧凑浮窗",
+                "Exit Compact Overlay" if compact else "Enable Compact Overlay",
+            ))
+        static_labels = {
+            "clear_history": ("清空字幕", "Clear Subtitles"),
+            "settings": ("设置", "Settings"),
+            "fullscreen_help": ("全屏兼容说明", "Fullscreen Compatibility"),
+            "quit": ("退出", "Quit"),
+        }
+        for key, (zh, en) in static_labels.items():
+            if key in self._tray_actions:
+                self._tray_actions[key].setText(ui_text(ui_language, zh, en))
         if self._tray_icon:
-            state = "暂停" if self._paused else "运行中"
+            state = ui_text(
+                ui_language,
+                "暂停" if self._paused else "运行中",
+                "Paused" if self._paused else "Running",
+            )
             self._tray_icon.setToolTip(f"{APP_NAME} v{APP_VERSION} - {state}")
 
     def _tray_toggle_overlay(self):
@@ -1218,6 +1265,7 @@ class VoxGoApp:
         audio_config: AudioConfig,
         translation_config: TranslationConfig,
         whisper_config: WhisperConfig,
+        app_config: RuntimeConfig,
         update_config: UpdateSettings,
     ):
         previous_device = self._last_audio_device
@@ -1230,6 +1278,10 @@ class VoxGoApp:
         )
         self.config.overlay = overlay_config
         self.config.hotkeys = hotkey_config
+        previous_ui_language = normalize_ui_language(getattr(self.config.app, "language", UI_LANGUAGE_ZH))
+        self.config.app = app_config or self.config.app or RuntimeConfig()
+        self.config.app.language = normalize_ui_language(getattr(self.config.app, "language", UI_LANGUAGE_ZH))
+        current_ui_language = self.config.app.language
         self.config.translation = translation_config
         self.config.translation.provider = normalize_translation_provider(self.config.translation.provider)
         self.config.update = update_config or self.config.update or UpdateSettings()
@@ -1339,42 +1391,76 @@ class VoxGoApp:
             if self._translator:
                 self._translator.clear_context()
             self._notify_user(
-                "语言方向已更新",
-                f"{LANGUAGE_NAMES[current_language_flow[0]]} → {LANGUAGE_NAMES[current_language_flow[1]]}",
-                "状态",
+                ui_text(current_ui_language, "语言方向已更新", "Language Direction Updated"),
+                f"{_language_name(current_language_flow[0], current_ui_language)} → "
+                f"{_language_name(current_language_flow[1], current_ui_language)}",
+                ui_text(current_ui_language, "状态", "Status"),
             )
         if current_translation != previous_translation:
             provider_label = TRANSLATION_PROVIDERS.get(
                 normalize_translation_provider(self.config.translation.provider),
                 self.config.translation.provider,
             )
-            detail = f"服务商: {provider_label}"
+            detail = ui_text(current_ui_language, f"服务商: {provider_label}", f"Provider: {provider_label}")
             if normalize_translation_provider(self.config.translation.provider) == "google":
-                detail += "\n接口: Google Cloud Translation Basic v2"
+                detail += ui_text(
+                    current_ui_language,
+                    "\n接口: Google Cloud Translation Basic v2",
+                    "\nAPI: Google Cloud Translation Basic v2",
+                )
             else:
-                detail += f"\n模型: {self.config.translation.model}\n兼容地址: {self.config.translation.endpoint}"
+                detail += ui_text(
+                    current_ui_language,
+                    f"\n模型: {self.config.translation.model}\n兼容地址: {self.config.translation.endpoint}",
+                    f"\nModel: {self.config.translation.model}\nEndpoint: {self.config.translation.endpoint}",
+                )
             self._notify_user(
-                "翻译接口已更新",
+                ui_text(current_ui_language, "翻译接口已更新", "Translation Provider Updated"),
                 detail,
-                "状态",
+                ui_text(current_ui_language, "状态", "Status"),
             )
         if current_whisper_device != previous_whisper_device:
             self._notify_user(
-                "识别设备已更新",
-                f"当前选择: {WHISPER_DEVICE_NAMES[current_whisper_device]}\n重启程序后生效",
-                "状态",
+                ui_text(current_ui_language, "识别设备已更新", "Recognition Device Updated"),
+                ui_text(
+                    current_ui_language,
+                    f"当前选择: {WHISPER_DEVICE_NAMES[current_whisper_device]}\n重启程序后生效",
+                    f"Current selection: {WHISPER_DEVICE_NAMES[current_whisper_device]}\nRestart VoxGo to apply it.",
+                ),
+                ui_text(current_ui_language, "状态", "Status"),
             )
         if current_model_download_source != previous_model_download_source:
             self._notify_user(
-                "模型下载源已更新",
-                f"当前选择: {describe_model_download_source(*current_model_download_source)}\n重启程序后生效",
-                "状态",
+                ui_text(current_ui_language, "模型下载源已更新", "Model Download Source Updated"),
+                ui_text(
+                    current_ui_language,
+                    f"当前选择: {describe_model_download_source(*current_model_download_source)}\n重启程序后生效",
+                    f"Current selection: {describe_model_download_source(*current_model_download_source)}\nRestart VoxGo to apply it.",
+                ),
+                ui_text(current_ui_language, "状态", "Status"),
             )
         if current_update != previous_update:
             self._notify_user(
-                "更新检查已更新",
-                f"自动检查: {'开启' if current_update[0] else '关闭'}\n通道: {current_update[1]}",
-                "状态",
+                ui_text(current_ui_language, "更新检查已更新", "Update Check Settings Updated"),
+                ui_text(
+                    current_ui_language,
+                    f"自动检查: {'开启' if current_update[0] else '关闭'}\n通道: {current_update[1]}",
+                    f"Automatic checks: {'On' if current_update[0] else 'Off'}\nChannel: {current_update[1]}",
+                ),
+                ui_text(current_ui_language, "状态", "Status"),
+            )
+        if current_ui_language != previous_ui_language:
+            if self._overlay:
+                self._overlay.app_config = self.config.app
+                self._overlay.refresh_language()
+            self._notify_user(
+                ui_text(current_ui_language, "界面语言已更新", "Interface Language Updated"),
+                ui_text(
+                    current_ui_language,
+                    "主要界面已切换为简体中文",
+                    "The main interface has switched to English.",
+                ),
+                ui_text(current_ui_language, "状态", "Status"),
             )
         self._last_audio_device = current_device
         self._last_translation_settings = current_translation

@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description"
+    content="VoxGo is an open-source real-time voice translation overlay for PC gamers. Capture Windows system audio, transcribe speech locally with Whisper, and show translated subtitles in a lightweight game overlay." />
+  <meta name="keywords"
+    content="VoxGo, game voice translator, PC game voice translation, real-time voice translation, game subtitle overlay, Discord voice translator, PC game subtitle overlay, Whisper ASR, faster-whisper, system audio capture, WASAPI loopback, OpenAI compatible translation, Google Translation, mobile mirror, open source game translation" />
+  <link rel="canonical" href="https://voxgo.cn/en/" />
+  <link rel="alternate" hreflang="zh-CN" href="https://voxgo.cn/" />
+  <link rel="alternate" hreflang="en" href="https://voxgo.cn/en/" />
+  <link rel="alternate" hreflang="x-default" href="https://voxgo.cn/" />
+
+  <meta property="og:title" content="VoxGo - Real-time voice translation overlay for PC gamers" />
+  <meta property="og:description"
+    content="Capture Windows system audio, transcribe speech locally with Whisper, and show translated subtitles in a lightweight game overlay." />
+  <meta property="og:url" content="https://voxgo.cn/en/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="https://voxgo.cn/assets/logo.png" />
+  <title>VoxGo - Real-time voice translation overlay for PC gamers</title>
+  <link rel="icon" type="image/png" href="../assets/favicon.png?v=2" />
+  <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png?v=2" />
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?397760e037f20a1dcf00fef3c18818bb";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <style>
+    :root {
+      --bg: #070b10;
+      --panel: rgba(17, 24, 39, .72);
+      --line: rgba(148, 163, 184, .2);
+      --text: #e5edf7;
+      --muted: #94a3b8;
+      --green: #22c55e;
+      --cyan: #38bdf8;
+      --blue: #60a5fa;
+      --pink: #ec4899;
+      color-scheme: dark
+    }
+
+    * {
+      box-sizing: border-box
+    }
+
+    html {
+      scroll-behavior: smooth
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(34, 197, 94, .12), transparent 34rem),
+        radial-gradient(circle at 80% 8%, rgba(56, 189, 248, .14), transparent 30rem),
+        radial-gradient(circle at 48% 20%, rgba(236, 72, 153, .13), transparent 28rem),
+        var(--bg);
+      overflow-x: hidden
+    }
+
+    body:before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .23;
+      background-image:
+        linear-gradient(rgba(148, 163, 184, .08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(148, 163, 184, .08) 1px, transparent 1px);
+      background-size: 56px 56px;
+      mask-image: linear-gradient(to bottom, black, transparent 86%)
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none
+    }
+
+    .container {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+      position: relative
+    }
+
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      backdrop-filter: blur(18px);
+      background: rgba(7, 11, 16, .7);
+      border-bottom: 1px solid var(--line)
+    }
+
+    .nav-inner {
+      height: 68px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 800;
+      letter-spacing: .02em
+    }
+
+    .brand-logo {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      box-shadow: 0 0 24px rgba(34, 197, 94, .35)
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 18px;
+      color: var(--muted);
+      font-size: 14px;
+      white-space: nowrap
+    }
+
+    .nav-links a:hover {
+      color: var(--text)
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.02fr) minmax(360px, .98fr);
+      align-items: center;
+      gap: 48px;
+      min-height: calc(100vh - 68px);
+      padding: 72px 0 56px
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: #bbf7d0;
+      border: 1px solid rgba(34, 197, 94, .35);
+      background: rgba(34, 197, 94, .1);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 13px
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0
+    }
+
+    h1 {
+      margin-top: 22px;
+      font-size: clamp(44px, 7vw, 88px);
+      line-height: .96;
+      letter-spacing: 0;
+      max-width: 820px
+    }
+
+    .gradient-text {
+      background: linear-gradient(100deg, #d9f99d, #38bdf8 54%, #f0abfc);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent
+    }
+
+    .lead {
+      margin-top: 22px;
+      color: #cbd5e1;
+      font-size: 20px;
+      line-height: 1.7;
+      max-width: 720px
+    }
+
+    .actions {
+      margin-top: 30px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 46px;
+      padding: 0 18px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: rgba(15, 23, 42, .68);
+      color: var(--text);
+      font-weight: 700;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, .18)
+    }
+
+    .btn-primary {
+      border-color: rgba(34, 197, 94, .62);
+      background: linear-gradient(135deg, #16a34a, #0891b2);
+      color: white
+    }
+
+    .hero-notes {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 24px
+    }
+
+    .pill {
+      border: 1px solid rgba(148, 163, 184, .22);
+      background: rgba(15, 23, 42, .55);
+      color: #cbd5e1;
+      border-radius: 999px;
+      padding: 8px 10px;
+      font-size: 13px
+    }
+
+    .mock {
+      border: 1px solid rgba(148, 163, 184, .22);
+      background: linear-gradient(180deg, rgba(15, 23, 42, .86), rgba(15, 23, 42, .42));
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: 0 28px 80px rgba(0, 0, 0, .34)
+    }
+
+    .game-screen {
+      position: relative;
+      min-height: 430px;
+      border-radius: 8px;
+      overflow: hidden;
+      background:
+        linear-gradient(150deg, rgba(15, 23, 42, .3), rgba(7, 11, 16, .88)),
+        radial-gradient(circle at 35% 25%, rgba(34, 197, 94, .28), transparent 22rem),
+        linear-gradient(135deg, #182131, #0a1018);
+      border: 1px solid rgba(148, 163, 184, .15)
+    }
+
+    .hero-logo {
+      position: absolute;
+      left: 50%;
+      top: 42%;
+      width: min(340px, 58%);
+      opacity: .22;
+      transform: translate(-50%, -50%);
+      filter: drop-shadow(0 18px 52px rgba(34, 197, 94, .25))
+    }
+
+    .hud {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px;
+      color: rgba(226, 232, 240, .9);
+      font-weight: 800
+    }
+
+    .radar {
+      width: 64px;
+      height: 64px;
+      border: 1px solid rgba(34, 197, 94, .45);
+      border-radius: 50%;
+      background:
+        radial-gradient(circle, rgba(34, 197, 94, .18) 0 2px, transparent 3px),
+        conic-gradient(from 140deg, rgba(34, 197, 94, .55), transparent 34%, transparent);
+      opacity: .9
+    }
+
+    .subtitle-panel {
+      position: absolute;
+      left: 22px;
+      right: 22px;
+      bottom: 24px;
+      border: 1px solid rgba(34, 197, 94, .8);
+      background: rgba(4, 12, 18, .78);
+      border-radius: 8px;
+      padding: 14px 16px;
+      box-shadow: 0 18px 46px rgba(0, 0, 0, .4)
+    }
+
+    .subtitle-title {
+      display: flex;
+      justify-content: space-between;
+      color: #bbf7d0;
+      font-size: 13px;
+      margin-bottom: 9px
+    }
+
+    .line+.line {
+      margin-top: 8px
+    }
+
+    .original {
+      color: #b7c4d8;
+      font-size: 14px
+    }
+
+    .translated {
+      color: #22ff62;
+      font-size: 20px;
+      font-weight: 800;
+      margin-top: 2px
+    }
+
+    .phone {
+      position: absolute;
+      right: 18px;
+      top: 98px;
+      width: 120px;
+      border-radius: 20px;
+      border: 1px solid rgba(226, 232, 240, .28);
+      background: rgba(7, 11, 16, .78);
+      padding: 8px;
+      transform: rotate(5deg);
+      box-shadow: 0 18px 42px rgba(0, 0, 0, .38)
+    }
+
+    .phone-screen {
+      min-height: 160px;
+      border-radius: 14px;
+      background: rgba(15, 23, 42, .95);
+      padding: 12px 8px;
+      font-size: 11px;
+      color: #94a3b8
+    }
+
+    .phone-card {
+      margin-top: 10px;
+      padding: 8px;
+      border-radius: 8px;
+      background: rgba(34, 197, 94, .11);
+      color: #e2e8f0
+    }
+
+    section {
+      padding: 82px 0
+    }
+
+    .section-head {
+      max-width: 760px;
+      margin-bottom: 30px
+    }
+
+    .section-head h2 {
+      font-size: clamp(28px, 4vw, 48px);
+      line-height: 1.08;
+      letter-spacing: 0
+    }
+
+    .section-head p {
+      margin-top: 14px;
+      color: var(--muted);
+      line-height: 1.8;
+      font-size: 17px
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      background: rgba(15, 23, 42, .58);
+      border-radius: 8px;
+      padding: 22px;
+      min-height: 100%
+    }
+
+    .card h3 {
+      font-size: 20px;
+      margin-bottom: 10px
+    }
+
+    .card p,
+    .card li {
+      color: var(--muted);
+      line-height: 1.72
+    }
+
+    .icon {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      margin-bottom: 14px;
+      background: rgba(34, 197, 94, .14);
+      border: 1px solid rgba(34, 197, 94, .22)
+    }
+
+    .download {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px
+    }
+
+    .tag {
+      display: inline-flex;
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: rgba(56, 189, 248, .12);
+      color: #bae6fd;
+      font-size: 12px;
+      margin-bottom: 14px
+    }
+
+    .download-card .btn {
+      margin-top: 18px
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px
+    }
+
+    .step {
+      padding: 18px
+    }
+
+    .step strong {
+      display: inline-grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      background: rgba(34, 197, 94, .16);
+      color: #86efac;
+      margin-bottom: 12px
+    }
+
+    .faq {
+      display: grid;
+      gap: 10px
+    }
+
+    details {
+      border: 1px solid var(--line);
+      background: rgba(15, 23, 42, .58);
+      border-radius: 8px;
+      padding: 16px 18px
+    }
+
+    summary {
+      cursor: pointer;
+      font-weight: 800
+    }
+
+    details p {
+      margin-top: 10px;
+      color: var(--muted);
+      line-height: 1.75
+    }
+
+    .cta {
+      border: 1px solid rgba(34, 197, 94, .3);
+      background: linear-gradient(135deg, rgba(34, 197, 94, .14), rgba(56, 189, 248, .08));
+      border-radius: 8px;
+      padding: 36px;
+      text-align: center
+    }
+
+    .cta p {
+      color: #cbd5e1;
+      max-width: 760px;
+      margin: 12px auto 0;
+      line-height: 1.75
+    }
+
+    footer {
+      padding: 28px 0 42px;
+      color: var(--muted);
+      border-top: 1px solid var(--line)
+    }
+
+    .footer-inner {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap
+    }
+
+    @media (max-width: 940px) {
+      .hero {
+        grid-template-columns: 1fr;
+        padding-top: 52px
+      }
+
+      .grid,
+      .download,
+      .steps {
+        grid-template-columns: 1fr
+      }
+    }
+
+    @media (max-width: 700px) {
+      .nav-inner {
+        height: auto;
+        padding: 14px 0;
+        align-items: flex-start;
+        flex-direction: column
+      }
+
+      .nav-links {
+        gap: 12px;
+        overflow-x: auto;
+        max-width: 100%;
+        padding-bottom: 4px
+      }
+
+      .container {
+        width: min(100% - 28px, 1120px)
+      }
+
+      .hero {
+        min-height: auto
+      }
+
+      .game-screen {
+        min-height: 360px
+      }
+
+      .phone {
+        display: none
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <nav class="nav">
+    <div class="container nav-inner">
+      <a class="brand" href="#top"><img class="brand-logo" src="../assets/logo.png?v=2" alt="VoxGo Logo" /><span>VoxGo</span></a>
+      <div class="nav-links"><a href="#features">Features</a><a href="#download">Download</a><a
+          href="#steps">How to use</a><a href="#faq">FAQ</a><a href="#safety">Privacy / Safety</a><a
+          href="/">中文</a><a href="https://github.com/zxbb1190/VoxGo_game_voice_trans">GitHub</a></div>
+    </div>
+  </nav>
+
+  <main id="top">
+    <div class="container hero">
+      <div>
+        <span class="eyebrow">Open-source · Windows · PC game voice translation</span>
+        <h1><span class="gradient-text">VoxGo</span><br />Real-time voice translation overlay for PC gamers.</h1>
+        <p class="lead">Capture Windows system audio, transcribe speech locally with Whisper, and show translated
+          subtitles in a lightweight game overlay.</p>
+        <div class="actions"><a class="btn btn-primary"
+            href="https://github.com/zxbb1190/VoxGo_game_voice_trans/releases/latest/download/VoxGo-v0.2.3-lite.zip">Download
+            Lite</a><a class="btn"
+            href="https://github.com/zxbb1190/VoxGo_game_voice_trans/releases/latest">Latest Release</a><a
+            class="btn" href="https://github.com/zxbb1190/VoxGo_game_voice_trans">GitHub</a></div>
+        <div class="hero-notes"><span class="pill">Open-source</span><span class="pill">No game process
+            injection</span><span class="pill">System audio by default</span><span class="pill">Local Whisper
+            ASR</span><span class="pill">Mobile mirror</span></div>
+      </div>
+      <div class="mock">
+        <div class="game-screen">
+          <div class="hud"><span>VoxGo</span>
+            <div class="radar"></div>
+          </div><img class="hero-logo" src="../assets/logo-op.png?v=2" alt="VoxGo Logo" />
+          <div class="phone">
+            <div class="phone-screen"><strong style="color:#e2e8f0">Mobile mirror</strong>
+              <div class="phone-card">Rotate B, do not peek mid.</div>
+              <div class="phone-card">转 B，别探中路。</div>
+            </div>
+          </div>
+          <div class="subtitle-panel">
+            <div class="subtitle-title"><span>Live translation</span><span>English → Chinese</span></div>
+            <div class="line">
+              <div class="original">He is one shot behind the box.</div>
+              <div class="translated">他在箱子后面，大残。</div>
+            </div>
+            <div class="line">
+              <div class="original">Push left with me.</div>
+              <div class="translated">跟我一起从左边推进。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <section id="features">
+      <div class="container">
+        <div class="section-head">
+          <h2>Built for real PC game voice, not meeting rooms.</h2>
+          <p>VoxGo focuses on overseas servers, Discord voice, squad comms, and lightweight subtitle mirroring while you
+            keep playing.</p>
+        </div>
+        <div class="grid">
+          <div class="card">
+            <div class="icon">A</div>
+            <h3>System audio capture</h3>
+            <p>Captures the sound Windows is already playing through WASAPI loopback. It is not microphone capture by
+              default.</p>
+          </div>
+          <div class="card">
+            <div class="icon">W</div>
+            <h3>Local Whisper ASR</h3>
+            <p>Speech recognition runs locally with faster-whisper. The Lite package downloads the model on first use;
+              the Full package includes a small model.</p>
+          </div>
+          <div class="card">
+            <div class="icon">T</div>
+            <h3>Flexible translation</h3>
+            <p>Use OpenAI-compatible providers, local compatible services, or Google Cloud Translation Basic v2.</p>
+          </div>
+          <div class="card">
+            <div class="icon">O</div>
+            <h3>Game overlay</h3>
+            <p>A transparent, always-on-top overlay shows translated subtitles without injecting into the game process.
+            </p>
+          </div>
+          <div class="card">
+            <div class="icon">M</div>
+            <h3>Mobile mirror</h3>
+            <p>Open the built-in QR code to mirror subtitles on a phone or a second device on your local network.</p>
+          </div>
+          <div class="card">
+            <div class="icon">D</div>
+            <h3>Diagnostics included</h3>
+            <p>Audio testing, translation testing, latency metrics, and feedback templates make troubleshooting less
+              mysterious.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="download">
+      <div class="container">
+        <div class="section-head">
+          <h2>Download VoxGo</h2>
+          <p>Start with Lite if your network can download the Whisper model. Use Full if you want the model bundled in
+            the archive.</p>
+        </div>
+        <div class="download">
+          <div class="card download-card">
+            <span class="tag">Recommended</span>
+            <h3>Lite package</h3>
+            <p>Smaller download. On first run, VoxGo downloads the speech recognition model and guides you through API
+              and audio tests.</p>
+            <a class="btn btn-primary"
+              href="https://github.com/zxbb1190/VoxGo_game_voice_trans/releases/latest/download/VoxGo-v0.2.3-lite.zip">Download
+              VoxGo v0.2.3 Lite</a>
+          </div>
+          <div class="card download-card">
+            <span class="tag">Bundled model</span>
+            <h3>Full package</h3>
+            <p>Larger download. Includes the Whisper small model, useful when model downloads are slow or blocked.</p>
+            <a class="btn"
+              href="https://github.com/zxbb1190/VoxGo_game_voice_trans/releases/latest/download/VoxGo-v0.2.3-full.zip">Download
+              VoxGo v0.2.3 Full</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="steps">
+      <div class="container">
+        <div class="section-head">
+          <h2>How to use</h2>
+          <p>Check translation and audio before joining a match. Most subtitle issues come from the wrong Windows output
+            device.</p>
+        </div>
+        <div class="steps">
+          <div class="card step"><strong>1</strong>
+            <h3>Download</h3>
+            <p>Download Lite or Full and unzip the archive.</p>
+          </div>
+          <div class="card step"><strong>2</strong>
+            <h3>Run VoxGo</h3>
+            <p>Launch VoxGo.exe and complete the first-run setup.</p>
+          </div>
+          <div class="card step"><strong>3</strong>
+            <h3>Test API</h3>
+            <p>Choose OpenAI-compatible or Google Translation and run the API test.</p>
+          </div>
+          <div class="card step"><strong>4</strong>
+            <h3>Test audio</h3>
+            <p>Select a system audio / loopback device and make sure the level meter moves.</p>
+          </div>
+          <div class="card step"><strong>5</strong>
+            <h3>Play</h3>
+            <p>Move and lock the overlay, then use hotkeys or the tray icon in-game.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq">
+      <div class="container">
+        <div class="section-head">
+          <h2>FAQ</h2>
+          <p>Short answers for the things people usually ask before trusting an overlay tool.</p>
+        </div>
+        <div class="faq">
+          <details open>
+            <summary>Does VoxGo record my microphone?</summary>
+            <p>Not by default. VoxGo is designed to capture Windows system audio output, such as game voice, Discord, or
+              video audio.</p>
+          </details>
+          <details>
+            <summary>Does it inject into games?</summary>
+            <p>No. VoxGo is a standalone desktop app. It captures audio through Windows devices and displays subtitles
+              in a transparent always-on-top window.</p>
+          </details>
+          <details>
+            <summary>Why do I hear sound but see no subtitles?</summary>
+            <p>The selected audio device may not match your current Windows output. Use the audio test meter in setup or
+              settings, then choose the loopback device that moves when game or Discord sound plays.</p>
+          </details>
+          <details>
+            <summary>Which languages are supported?</summary>
+            <p>The current public UI focuses on English and Chinese: English to Chinese and Chinese to English.</p>
+          </details>
+          <details>
+            <summary>Lite or Full?</summary>
+            <p>Lite is smaller and downloads the Whisper model on first run. Full is larger and includes the model.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <section id="safety">
+      <div class="container">
+        <div class="section-head">
+          <h2>Privacy / Safety</h2>
+          <p>VoxGo keeps the risky parts explicit: no game process injection, system audio capture instead of microphone
+            by default, local Whisper ASR, and user-controlled translation providers.</p>
+        </div>
+        <div class="grid">
+          <div class="card">
+            <h3>No game injection</h3>
+            <p>The overlay is an independent window. It does not patch, hook, or modify game clients.</p>
+          </div>
+          <div class="card">
+            <h3>Local transcription</h3>
+            <p>Whisper transcription runs on your PC. Translation requests go to the provider you configure.</p>
+          </div>
+          <div class="card">
+            <h3>Open source</h3>
+            <p>The code is available on GitHub, including packaging scripts, update manifest, and runtime behavior.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="container">
+        <div class="cta">
+          <h2>Try it, break it, report real game cases.</h2>
+          <p>VoxGo needs feedback from different games, headsets, languages, accents, and Windows audio setups. The
+            built-in feedback template includes version, device, provider, latency, and log paths.</p>
+          <div class="actions" style="justify-content:center"><a class="btn btn-primary"
+              href="https://github.com/zxbb1190/VoxGo_game_voice_trans/issues/new">Open an Issue</a><a class="btn"
+              href="https://github.com/zxbb1190/VoxGo_game_voice_trans">Star on GitHub</a></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container footer-inner"><span>© <span id="year"></span> VoxGo. Open-source community edition.</span><span><a
+          href="https://github.com/zxbb1190/VoxGo_game_voice_trans/blob/main/LICENSE">GPLv3 License</a> · <a
+          href="https://github.com/zxbb1190/VoxGo_game_voice_trans">GitHub</a> · <a
+          href="https://github.com/zxbb1190/VoxGo_game_voice_trans/releases/latest">Releases</a></span></div>
+  </footer>
+  <script>document.getElementById('year').textContent = new Date().getFullYear();</script>
+</body>
+
+</html>
