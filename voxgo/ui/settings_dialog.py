@@ -22,7 +22,13 @@ from PyQt5.QtWidgets import (
 )
 
 from voxgo.app_info import APP_NAME, APP_VERSION, APP_WEBSITE, GITHUB_URL
-from voxgo.audio.capture import AudioConfig, AUDIO_LATENCY_PRESETS, LATENCY_MODE_CUSTOM, normalize_latency_mode
+from voxgo.audio.capture import (
+    AudioConfig,
+    AUDIO_LATENCY_PRESETS,
+    LATENCY_MODE_BALANCED,
+    LATENCY_MODE_CUSTOM,
+    normalize_latency_mode,
+)
 from voxgo.i18n import UI_LANGUAGE_OPTIONS, UI_LANGUAGE_ZH, is_english_ui, normalize_ui_language
 from voxgo.translation import TRANSLATION_PROVIDERS, TranslationConfig, normalize_translation_provider
 from voxgo.update.checker import UpdateCheckResult, UpdateInfo, UpdateSettings, normalize_update_channel

@@ -10,6 +10,7 @@ import time
 from collections import deque
 from typing import Callable, List, Optional
 
+from loguru import logger
 from PyQt5.QtCore import Qt, QEvent, QPoint, QRect, QTimer, QObject, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QPen, QBrush, QTextDocument, QCursor
 from PyQt5.QtWidgets import (
@@ -697,26 +698,31 @@ class GameOverlay(QWidget):
             self._settings_dialog.raise_()
             self._settings_dialog.activateWindow()
             return
-        self._settings_dialog = SettingsDialog(
-            self.config,
-            self.hotkeys,
-            self.audio_config,
-            self.translation_config,
-            self.audio_devices,
-            self.whisper_config,
-            self.app_config,
-            self.debug_config,
-            self.update_config,
-            self.app_version,
-            self.runtime_dir,
-            self._current_latency_summary(),
-            self,
-        )
-        self._settings_dialog.settings_changed.connect(self._apply_settings)
-        if self._pending_update:
-            self._settings_dialog.show_pending_update(self._pending_update)
-        self._set_update_badge_visible(False)
-        self._settings_dialog.show()
+        try:
+            self._settings_dialog = SettingsDialog(
+                self.config,
+                self.hotkeys,
+                self.audio_config,
+                self.translation_config,
+                self.audio_devices,
+                self.whisper_config,
+                self.app_config,
+                self.debug_config,
+                self.update_config,
+                self.app_version,
+                self.runtime_dir,
+                self._current_latency_summary(),
+                self,
+            )
+            self._settings_dialog.settings_changed.connect(self._apply_settings)
+            if self._pending_update:
+                self._settings_dialog.show_pending_update(self._pending_update)
+            self._set_update_badge_visible(False)
+            self._settings_dialog.show()
+            self._settings_dialog.raise_()
+            self._settings_dialog.activateWindow()
+        except Exception:
+            logger.exception("打开设置窗口失败")
 
     def show_first_run_wizard(self, on_completed: Optional[Callable[[], None]] = None):
         if self._first_run_wizard and self._first_run_wizard.isVisible():
