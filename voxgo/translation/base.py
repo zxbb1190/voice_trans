@@ -164,6 +164,21 @@ def short_error_text(error_text: str) -> str:
     return text[:220]
 
 
+def clean_translation_output(text: str) -> str:
+    """Normalize provider output before displaying it."""
+    cleaned = str(text or "")
+    target_match = re.search(
+        r"<\s*target_text\s*>(.*?)</\s*target_text\s*>",
+        cleaned,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if target_match:
+        cleaned = target_match.group(1)
+    cleaned = re.sub(r"</?\s*(?:source_text|target_text)\s*>", "", cleaned, flags=re.IGNORECASE)
+    cleaned = " ".join(cleaned.split())
+    return cleaned.strip()
+
+
 class TranslatorProvider:
     name = ""
 

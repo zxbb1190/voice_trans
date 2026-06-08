@@ -53,6 +53,8 @@ release/
 *.log
 *.tmp
 *.temp
+temp/
+diagnostics/audio/
 
 # Generated QR/test images
 mobile_qr_test.png

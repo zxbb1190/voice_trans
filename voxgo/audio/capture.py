@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Optional, Callable
 
 import numpy as np
+import webrtcvad
 try:
     import pyaudiowpatch as pyaudio
     HAS_WASAPI_LOOPBACK = True
@@ -38,24 +39,24 @@ LATENCY_PRESET_MATCH_KEYS = (
 
 AUDIO_LATENCY_PRESETS = {
     LATENCY_MODE_FAST: {
-        "chunk_duration_ms": 150,
+        "chunk_duration_ms": 120,
         "speech_threshold_blocks": 2,
         "silence_limit_blocks": 3,
         "max_buffer_blocks": 100,
-        "max_speech_seconds": 4.0,
-        "pre_roll_ms": 350,
-        "speech_idle_timeout_ms": 500,
+        "max_speech_seconds": 3.0,
+        "pre_roll_ms": 300,
+        "speech_idle_timeout_ms": 350,
         "min_segment_seconds": 0.30,
         "min_segment_peak_margin_db": 1.0,
     },
     LATENCY_MODE_BALANCED: {
-        "chunk_duration_ms": 220,
+        "chunk_duration_ms": 200,
         "speech_threshold_blocks": 2,
-        "silence_limit_blocks": 4,
+        "silence_limit_blocks": 3,
         "max_buffer_blocks": 120,
         "max_speech_seconds": 6.0,
         "pre_roll_ms": 450,
-        "speech_idle_timeout_ms": 650,
+        "speech_idle_timeout_ms": 550,
         "min_segment_seconds": 0.35,
         "min_segment_peak_margin_db": 1.5,
     },
@@ -147,14 +148,15 @@ class AudioConfig:
     latency_mode: str = ""
     sample_rate: int = 16000
     channels: int = 1
-    chunk_duration_ms: int = 220
+    chunk_duration_ms: int = 200
+    vad_aggressiveness: int = 2
     silence_threshold: float = -40.0
     speech_threshold_blocks: int = 2
-    silence_limit_blocks: int = 4
+    silence_limit_blocks: int = 3
     max_buffer_blocks: int = 120
     max_speech_seconds: float = 6.0
     pre_roll_ms: int = 450
-    speech_idle_timeout_ms: int = 650
+    speech_idle_timeout_ms: int = 550
     soft_silence_margin_db: float = 10.0
     soft_silence_gate_margin_db: float = 5.0
     noise_calibration_seconds: float = 2.0
@@ -183,6 +185,10 @@ class SpeechSegment:
     energy_threshold_dbfs: float
     noise_floor_dbfs: Optional[float]
     reason: str
+    vad_voice_blocks: int = 0
+    energy_voice_blocks: int = 0
+    vad_confidence: float = 0.0
+    activity_source: str = ""
 
 
 def _device_name(info) -> str:
@@ -395,6 +401,8 @@ class SystemAudioCapture:
         self._speech_buffer_samples = 0
         self._speech_voice_samples = 0
         self._speech_voice_blocks = 0
+        self._speech_vad_voice_blocks = 0
+        self._speech_energy_voice_blocks = 0
         self._speech_peak_rms = None
         self._last_tail_silence_reason = ""
         self._stream_channels = max(1, self.config.channels)
@@ -474,6 +482,9 @@ class SystemAudioCapture:
         self._pre_roll_buffer = []
         self._pre_roll_samples = 0
         self._last_audio_activity_at = None
+        aggressiveness = max(0, min(3, int(getattr(self.config, "vad_aggressiveness", 2) or 2)))
+        self._vad = webrtcvad.Vad(aggressiveness)
+        self._vad_sample_rate = 16000
 
     def find_loopback_device(self) -> Optional[int]:
         """Find the configured or most likely system-audio input device."""
@@ -786,7 +797,9 @@ class SystemAudioCapture:
             return None
         rms = calculate_rms_dbfs(audio_np)
         self._update_noise_gate(rms, len(audio_np))
-        is_speech = rms > self._energy_threshold
+        vad_speech, vad_ratio = self._is_vad_speech(audio_np)
+        energy_activity = rms > self._energy_threshold
+        is_activity = bool(vad_speech or energy_activity)
         tail_silence_reason = ""
         if self._speech_buffer and self._speech_peak_rms is not None:
             enough_voice = self._speech_voice_blocks >= self._speech_threshold
@@ -800,19 +813,22 @@ class SystemAudioCapture:
                 and rms <= self._speech_peak_rms - min(4.0, self._soft_silence_margin_db)
             )
             if enough_voice and (relative_tail or near_noise_gate):
-                is_speech = False
+                is_activity = False
                 tail_silence_reason = "尾音下降" if relative_tail else "接近噪声门限"
                 self._last_tail_silence_reason = tail_silence_reason
         logger.debug(
-            'RMS: {:.1f} dBFS, 阈值: {:.1f} dBFS, 噪声: {}, 语音: {}{}',
+            "audio activity: rms={:.1f} dBFS, gate={:.1f} dBFS, noise={}, vad={}, vad_ratio={:.2f}, energy={}, active={}{}",
             rms,
             self._energy_threshold,
-            f'{self._noise_floor:.1f} dBFS' if self._noise_floor is not None else '校准中',
-            is_speech,
+            f"{self._noise_floor:.1f} dBFS" if self._noise_floor is not None else "calibrating",
+            vad_speech,
+            vad_ratio,
+            energy_activity,
+            is_activity,
             f' ({tail_silence_reason})' if tail_silence_reason else '',
         )
 
-        if is_speech:
+        if is_activity:
             if not self._speech_buffer and self._pre_roll_buffer:
                 for pre_roll_data, pre_roll_samples in self._pre_roll_buffer:
                     self._speech_buffer.append(pre_roll_data)
@@ -825,8 +841,12 @@ class SystemAudioCapture:
                 self._clear_pre_roll()
             self._speech_buffer.append(audio_data)
             self._speech_buffer_samples += len(audio_np)
-            self._speech_voice_samples += len(audio_np)
-            self._speech_voice_blocks += 1
+            if vad_speech:
+                self._speech_voice_samples += len(audio_np)
+                self._speech_voice_blocks += 1
+                self._speech_vad_voice_blocks += 1
+            elif energy_activity:
+                self._speech_energy_voice_blocks += 1
             self._speech_peak_rms = rms if self._speech_peak_rms is None else max(self._speech_peak_rms, rms)
             self._silence_counter = 0
             self._last_tail_silence_reason = ""
@@ -848,8 +868,20 @@ class SystemAudioCapture:
             logger.debug(f'静音计数: {self._silence_counter}/{self._silence_limit}')
             if (self._silence_counter >= self._silence_limit
                     and self._speech_voice_blocks < self._speech_threshold):
-                logger.debug(f'丢弃过短片段: {self._speech_voice_blocks} 个语音块')
-                self._reset_speech_buffer()
+                logger.debug(
+                    "capture short segment promoted to candidate: voice_blocks={}",
+                    self._speech_voice_blocks,
+                )
+                reason = "candidate_short_segment/silence_end"
+                if self._last_tail_silence_reason:
+                    reason = f"{reason}/{self._last_tail_silence_reason}"
+                logger.info(
+                    "capture candidate short segment: vad_blocks={}, energy_blocks={}, total_blocks={}",
+                    self._speech_vad_voice_blocks,
+                    self._speech_energy_voice_blocks,
+                    len(self._speech_buffer),
+                )
+                return self._emit_speech_buffer(reason)
         else:
             self._append_pre_roll(audio_data, len(audio_np))
 
@@ -906,6 +938,38 @@ class SystemAudioCapture:
         self._pre_roll_buffer.clear()
         self._pre_roll_samples = 0
 
+    def _is_vad_speech(self, audio_np: np.ndarray) -> tuple:
+        if len(audio_np) == 0:
+            return False, 0.0
+        try:
+            source_rate = max(1, int(self._capture_sample_rate or self.config.sample_rate or 16000))
+            mono = audio_np.astype(np.float32, copy=False)
+            if source_rate != self._vad_sample_rate:
+                target_len = max(1, int(len(mono) * self._vad_sample_rate / source_rate))
+                x_old = np.linspace(0, 1, len(mono), dtype=np.float32)
+                x_new = np.linspace(0, 1, target_len, dtype=np.float32)
+                mono = np.interp(x_new, x_old, mono).astype(np.float32)
+            samples = np.clip(mono, -32768, 32767).astype(np.int16)
+            frame_samples = int(self._vad_sample_rate * 0.02)
+            if len(samples) < frame_samples:
+                return False, 0.0
+            voiced = 0
+            total = 0
+            for start in range(0, len(samples) - frame_samples + 1, frame_samples):
+                frame = samples[start:start + frame_samples]
+                if len(frame) != frame_samples:
+                    continue
+                total += 1
+                if self._vad.is_speech(frame.tobytes(), self._vad_sample_rate):
+                    voiced += 1
+            if total <= 0:
+                return False, 0.0
+            ratio = voiced / total
+            return ratio >= 0.35, ratio
+        except Exception as exc:
+            logger.debug("WebRTC VAD failed, keeping energy activity as candidate context: {}", exc)
+            return False, 0.0
+
     def _handle_idle_timeout(self, now: float) -> Optional[bytes]:
         if self._last_audio_activity_at is None:
             return None
@@ -919,12 +983,7 @@ class SystemAudioCapture:
         if self._speech_idle_timeout_ms <= 0 or idle_ms < self._speech_idle_timeout_ms:
             return None
 
-        if self._speech_voice_blocks >= self._speech_threshold:
-            return self._emit_speech_buffer(f"空闲 {idle_ms:.0f}ms")
-
-        logger.debug("空闲超时，丢弃过短片段: {} 个语音块", self._speech_voice_blocks)
-        self._reset_speech_buffer()
-        return None
+        return self._emit_speech_buffer(f"idle {idle_ms:.0f}ms")
 
     def _buffer_duration_seconds(self) -> float:
         sample_rate = max(1, int(self.config.sample_rate or self._capture_sample_rate or 16000))
@@ -942,6 +1001,8 @@ class SystemAudioCapture:
         self._speech_buffer_samples = 0
         self._speech_voice_samples = 0
         self._speech_voice_blocks = 0
+        self._speech_vad_voice_blocks = 0
+        self._speech_energy_voice_blocks = 0
         self._speech_peak_rms = None
         self._last_tail_silence_reason = ""
         self._silence_counter = 0
@@ -953,6 +1014,10 @@ class SystemAudioCapture:
         voice_duration = self._speech_voice_samples / sample_rate
         block_count = len(self._speech_buffer)
         voice_blocks = self._speech_voice_blocks
+        vad_voice_blocks = self._speech_vad_voice_blocks
+        energy_voice_blocks = self._speech_energy_voice_blocks
+        vad_confidence = vad_voice_blocks / max(1, block_count)
+        activity_source = "vad" if vad_voice_blocks else ("energy" if energy_voice_blocks else "unknown")
         peak_rms = float(self._speech_peak_rms if self._speech_peak_rms is not None else -120.0)
         segment = SpeechSegment(
             audio_data=speech_data,
@@ -965,6 +1030,10 @@ class SystemAudioCapture:
             energy_threshold_dbfs=float(self._energy_threshold),
             noise_floor_dbfs=self._noise_floor,
             reason=reason,
+            vad_voice_blocks=vad_voice_blocks,
+            energy_voice_blocks=energy_voice_blocks,
+            vad_confidence=vad_confidence,
+            activity_source=activity_source,
         )
         logger.info(
             '检测到语音片段: {} 字节, {:.1f}s/{:.1f}s 语音, {} 块/{} 语音块, peak={:.1f} dBFS, gate={:.1f} dBFS ({})',

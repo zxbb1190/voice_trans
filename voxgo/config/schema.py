@@ -75,6 +75,11 @@ class DebugConfig:
     log_level: str = "INFO"
     save_audio_chunks: bool = False
     save_transcripts: bool = False
+    save_failed_audio: bool = False
+    save_dropped_audio: bool = False
+    save_empty_asr_audio: bool = False
+    save_low_confidence_audio: bool = False
+    diagnostics_audio_dir: str = "diagnostics/audio"
 
 
 @dataclass

@@ -1,0 +1,69 @@
+import sys
+import unittest
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from voxgo.asr.pipeline import CandidatePolicy, RecognitionModePolicy
+from voxgo.audio.capture import LATENCY_MODE_ACCURATE, LATENCY_MODE_BALANCED, LATENCY_MODE_FAST, AudioConfig, SpeechSegment
+
+
+def _low_margin_short_segment():
+    return SpeechSegment(
+        audio_data=b"\x01\x00" * 3200,
+        sample_rate=16000,
+        duration_seconds=0.2,
+        voice_duration_seconds=0.15,
+        block_count=1,
+        voice_blocks=1,
+        peak_rms_dbfs=-39.5,
+        energy_threshold_dbfs=-40.0,
+        noise_floor_dbfs=-48.0,
+        reason="test",
+    )
+
+
+class LatencyModePolicyTest(unittest.TestCase):
+    def test_latency_modes_change_timing_not_candidate_acceptance(self):
+        policy = CandidatePolicy()
+        segment = _low_margin_short_segment()
+
+        for mode in ("fast", "balanced", "accurate"):
+            with self.subTest(mode=mode):
+                audio = AudioConfig(
+                    latency_mode=mode,
+                    min_segment_seconds=0.45,
+                    min_segment_peak_margin_db=2.0,
+                )
+                decision = policy.classify(segment, audio)
+                mode_policy = RecognitionModePolicy.from_audio_config(audio)
+
+                self.assertTrue(decision.accepted)
+                self.assertTrue(decision.low_confidence)
+                self.assertTrue(decision.short_segment)
+                self.assertGreaterEqual(mode_policy.pending_timeout_seconds, 0.3)
+                self.assertLessEqual(mode_policy.pending_timeout_seconds, 1.0)
+
+    def test_mode_policy_has_larger_queues_than_legacy_two_item_queue(self):
+        for mode in ("fast", "balanced", "accurate"):
+            with self.subTest(mode=mode):
+                mode_policy = RecognitionModePolicy.from_audio_config(AudioConfig(latency_mode=mode))
+                self.assertGreater(mode_policy.queue_size, 2)
+
+    def test_latency_modes_have_separate_pending_waits(self):
+        expectations = {
+            LATENCY_MODE_FAST: 0.30,
+            LATENCY_MODE_BALANCED: 0.55,
+            LATENCY_MODE_ACCURATE: 1.00,
+        }
+
+        for mode, expected in expectations.items():
+            with self.subTest(mode=mode):
+                policy = RecognitionModePolicy.from_audio_config(AudioConfig(latency_mode=mode))
+                self.assertAlmostEqual(policy.pending_timeout_seconds, expected)
+
+
+if __name__ == "__main__":
+    unittest.main()

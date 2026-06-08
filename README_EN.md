@@ -216,7 +216,7 @@ Edit `config.json` or use the overlay settings:
 | `audio.silence_threshold` | Static fallback speech threshold in dBFS; default -40, avoid values above -20 for real voice chat |
 | `audio.speech_threshold_blocks` | Consecutive speech blocks required before speech starts in custom mode, balanced default 2 |
 | `audio.silence_limit_blocks` | Consecutive silent blocks required before segment flush in custom mode, balanced default 4 |
-| `audio.speech_idle_timeout_ms` | Active segment flush when speech is buffered but no new audio frames arrive, balanced default 650ms |
+| `audio.speech_idle_timeout_ms` | Active segment flush when speech is buffered but no new audio frames arrive, balanced default 550ms |
 | `audio.pre_roll_ms` | Audio kept before speech triggers, balanced default 450ms |
 | `audio.soft_silence_margin_db` | Treat the tail as silence after it drops this many dB below the segment peak, default 10 |
 | `audio.soft_silence_gate_margin_db` | Treat audio close to the speech gate as tail silence, default 5 |

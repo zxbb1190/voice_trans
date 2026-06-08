@@ -259,13 +259,13 @@ class AudioDeviceConfig:
     input_device_index: Optional[int] = None
     input_device_name: str = ""
     input_device_id: str = ""
-    chunk_duration_ms: int = 220
+    chunk_duration_ms: int = 200
     speech_threshold_blocks: int = 2
-    silence_limit_blocks: int = 4
+    silence_limit_blocks: int = 3
     max_buffer_blocks: int = 120
     max_speech_seconds: float = 6.0
     pre_roll_ms: int = 450
-    speech_idle_timeout_ms: int = 650
+    speech_idle_timeout_ms: int = 550
     min_segment_seconds: float = 0.35
     min_segment_peak_margin_db: float = 1.5
 
@@ -289,6 +289,11 @@ class DebugConfig:
     log_level: str = "INFO"
     save_audio_chunks: bool = False
     save_transcripts: bool = False
+    save_failed_audio: bool = False
+    save_dropped_audio: bool = False
+    save_empty_asr_audio: bool = False
+    save_low_confidence_audio: bool = False
+    diagnostics_audio_dir: str = "diagnostics/audio"
 
 
 UPDATE_CHANNEL_OPTIONS = (

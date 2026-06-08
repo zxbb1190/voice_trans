@@ -1,3 +1,4 @@
+import copy
 import json
 import sys
 import tempfile
@@ -8,10 +9,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from voxgo.audio.capture import LATENCY_MODE_FAST
+from voxgo.audio.capture import LATENCY_MODE_BALANCED, LATENCY_MODE_FAST
 from voxgo.config.loader import (
     default_app_config,
     load_config,
+    migrate_runtime_defaults,
     save_user_settings,
     serialize_user_settings,
     sync_language_flow,
@@ -68,6 +70,7 @@ class ConfigLoaderTest(unittest.TestCase):
             config = default_app_config()
             config.app.setup_completed = True
             config.whisper.device = "gpu"
+            config.whisper.fast_model_size = "base"
             config.translation.provider = "openai"
             config.update.ignored_version = "v0.3.0"
 
@@ -76,8 +79,29 @@ class ConfigLoaderTest(unittest.TestCase):
             data = json.loads((runtime_dir / "user_settings.json").read_text(encoding="utf-8"))
             self.assertTrue(data["app"]["setup_completed"])
             self.assertEqual(data["whisper"]["device"], "cuda")
+            self.assertEqual(data["whisper"]["model_size"], "small")
+            self.assertEqual(data["whisper"]["fast_model_size"], "base")
             self.assertEqual(data["translation"]["provider"], "openai_compatible")
             self.assertEqual(data["update"]["ignored_version"], "0.3.0")
+
+    def test_fast_model_size_only_activates_for_fast_mode(self):
+        config = default_app_config()
+        config.whisper.model_size = "small"
+        config.whisper.fast_model_size = "base"
+        config.audio.latency_mode = LATENCY_MODE_FAST
+        load_like_fast = copy.deepcopy(config)
+
+        migrate_runtime_defaults(load_like_fast, preserve_existing_audio_tuning=False)
+
+        self.assertEqual(load_like_fast.whisper.model_size, "small")
+        self.assertEqual(load_like_fast.whisper.active_model_size, "base")
+
+        balanced = copy.deepcopy(config)
+        balanced.audio.latency_mode = LATENCY_MODE_BALANCED
+        migrate_runtime_defaults(balanced, preserve_existing_audio_tuning=False)
+
+        self.assertEqual(balanced.whisper.model_size, "small")
+        self.assertEqual(balanced.whisper.active_model_size, "")
 
     def test_language_flow_and_vad_limit_sync(self):
         config = default_app_config()

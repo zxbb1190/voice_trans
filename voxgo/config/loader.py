@@ -152,10 +152,31 @@ def migrate_runtime_defaults(config: AppConfig, preserve_existing_audio_tuning: 
         )
     except Exception:
         config.translation.max_concurrent_requests = 2
+    if not getattr(config, "debug", None):
+        config.debug = DebugConfig()
+    if not hasattr(config.debug, "save_failed_audio"):
+        config.debug.save_failed_audio = False
+    if not hasattr(config.debug, "save_dropped_audio"):
+        config.debug.save_dropped_audio = False
+    if not hasattr(config.debug, "save_empty_asr_audio"):
+        config.debug.save_empty_asr_audio = False
+    if not hasattr(config.debug, "save_low_confidence_audio"):
+        config.debug.save_low_confidence_audio = False
+    if not hasattr(config.debug, "diagnostics_audio_dir"):
+        config.debug.diagnostics_audio_dir = "diagnostics/audio"
+    config.debug.diagnostics_audio_dir = str(
+        getattr(config.debug, "diagnostics_audio_dir", "diagnostics/audio") or "diagnostics/audio"
+    ).strip() or "diagnostics/audio"
     if not hasattr(config.whisper, "cpu_threads"):
         config.whisper.cpu_threads = 2
     if not hasattr(config.whisper, "num_workers"):
         config.whisper.num_workers = 1
+    if not hasattr(config.whisper, "fast_model_size"):
+        config.whisper.fast_model_size = ""
+    if not hasattr(config.whisper, "active_model_size"):
+        config.whisper.active_model_size = ""
+    config.whisper.model_size = str(getattr(config.whisper, "model_size", "small") or "small").strip() or "small"
+    config.whisper.fast_model_size = str(getattr(config.whisper, "fast_model_size", "") or "").strip()
     if preserve_existing_audio_tuning:
         config.audio.latency_mode = infer_latency_mode(config.audio)
     else:
@@ -163,6 +184,9 @@ def migrate_runtime_defaults(config: AppConfig, preserve_existing_audio_tuning: 
             getattr(config.audio, "latency_mode", LATENCY_MODE_BALANCED)
         )
     latency_mode = apply_audio_latency_preset(config.audio)
+    config.whisper.active_model_size = (
+        config.whisper.fast_model_size if latency_mode == LATENCY_MODE_FAST and config.whisper.fast_model_size else ""
+    )
     try:
         config.whisper.beam_size = max(
             1,
@@ -175,10 +199,10 @@ def migrate_runtime_defaults(config: AppConfig, preserve_existing_audio_tuning: 
     try:
         config.audio.chunk_duration_ms = max(
             60,
-            min(1000, int(getattr(config.audio, "chunk_duration_ms", 220) or 220)),
+            min(1000, int(getattr(config.audio, "chunk_duration_ms", 200) or 200)),
         )
     except Exception:
-        config.audio.chunk_duration_ms = 220
+        config.audio.chunk_duration_ms = 200
     try:
         config.audio.speech_threshold_blocks = max(
             1,
@@ -189,10 +213,10 @@ def migrate_runtime_defaults(config: AppConfig, preserve_existing_audio_tuning: 
     try:
         config.audio.silence_limit_blocks = max(
             1,
-            min(50, int(getattr(config.audio, "silence_limit_blocks", 4) or 4)),
+            min(50, int(getattr(config.audio, "silence_limit_blocks", 3) or 3)),
         )
     except Exception:
-        config.audio.silence_limit_blocks = 4
+        config.audio.silence_limit_blocks = 3
     try:
         config.audio.max_buffer_blocks = max(
             10,
@@ -210,10 +234,10 @@ def migrate_runtime_defaults(config: AppConfig, preserve_existing_audio_tuning: 
     try:
         config.audio.speech_idle_timeout_ms = max(
             100,
-            min(3000, int(getattr(config.audio, "speech_idle_timeout_ms", 650) or 650)),
+            min(3000, int(getattr(config.audio, "speech_idle_timeout_ms", 550) or 550)),
         )
     except Exception:
-        config.audio.speech_idle_timeout_ms = 650
+        config.audio.speech_idle_timeout_ms = 550
     try:
         config.whisper.min_language_probability = max(
             0.0,
@@ -323,6 +347,8 @@ def serialize_user_settings(config: AppConfig) -> dict:
             "toggle_compact": config.hotkeys.toggle_compact,
         },
         "whisper": {
+            "model_size": str(getattr(config.whisper, "model_size", "small") or "small").strip() or "small",
+            "fast_model_size": str(getattr(config.whisper, "fast_model_size", "") or "").strip(),
             "device": normalize_whisper_device(config.whisper.device),
             "cpu_threads": int(getattr(config.whisper, "cpu_threads", 2) or 2),
             "num_workers": int(getattr(config.whisper, "num_workers", 1) or 1),
@@ -352,6 +378,13 @@ def serialize_user_settings(config: AppConfig) -> dict:
             "log_level": getattr(config.debug, "log_level", "INFO"),
             "save_audio_chunks": bool(getattr(config.debug, "save_audio_chunks", False)),
             "save_transcripts": bool(getattr(config.debug, "save_transcripts", False)),
+            "save_failed_audio": bool(getattr(config.debug, "save_failed_audio", False)),
+            "save_dropped_audio": bool(getattr(config.debug, "save_dropped_audio", False)),
+            "save_empty_asr_audio": bool(getattr(config.debug, "save_empty_asr_audio", False)),
+            "save_low_confidence_audio": bool(getattr(config.debug, "save_low_confidence_audio", False)),
+            "diagnostics_audio_dir": str(
+                getattr(config.debug, "diagnostics_audio_dir", "diagnostics/audio") or "diagnostics/audio"
+            ),
         },
         "update": {
             "enabled": bool(getattr(config.update, "enabled", True)),

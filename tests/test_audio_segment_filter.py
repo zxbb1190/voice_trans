@@ -79,12 +79,12 @@ class AudioLatencyModeTest(unittest.TestCase):
         mode = apply_audio_latency_preset(config)
 
         self.assertEqual(mode, LATENCY_MODE_BALANCED)
-        self.assertEqual(config.chunk_duration_ms, 220)
+        self.assertEqual(config.chunk_duration_ms, 200)
         self.assertEqual(config.speech_threshold_blocks, 2)
-        self.assertEqual(config.silence_limit_blocks, 4)
+        self.assertEqual(config.silence_limit_blocks, 3)
         self.assertEqual(config.max_speech_seconds, 6.0)
         self.assertEqual(config.pre_roll_ms, 450)
-        self.assertEqual(config.speech_idle_timeout_ms, 650)
+        self.assertEqual(config.speech_idle_timeout_ms, 550)
         self.assertEqual(config.min_segment_seconds, 0.35)
         self.assertEqual(config.min_segment_peak_margin_db, 1.5)
 
@@ -94,12 +94,12 @@ class AudioLatencyModeTest(unittest.TestCase):
         mode = apply_audio_latency_preset(config)
 
         self.assertEqual(mode, LATENCY_MODE_FAST)
-        self.assertEqual(config.chunk_duration_ms, 150)
+        self.assertEqual(config.chunk_duration_ms, 120)
         self.assertEqual(config.speech_threshold_blocks, 2)
         self.assertEqual(config.silence_limit_blocks, 3)
-        self.assertEqual(config.max_speech_seconds, 4.0)
-        self.assertEqual(config.pre_roll_ms, 350)
-        self.assertEqual(config.speech_idle_timeout_ms, 500)
+        self.assertEqual(config.max_speech_seconds, 3.0)
+        self.assertEqual(config.pre_roll_ms, 300)
+        self.assertEqual(config.speech_idle_timeout_ms, 350)
         self.assertEqual(config.min_segment_seconds, 0.30)
         self.assertEqual(config.min_segment_peak_margin_db, 1.0)
 

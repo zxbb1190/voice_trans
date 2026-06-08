@@ -7,7 +7,7 @@ from loguru import logger
 
 from voxgo.runtime.events import TranslationReady
 from voxgo.runtime.work_items import LatencyTrace
-from voxgo.translation import GameTranslator, TranslationConfig
+from voxgo.translation import GameTranslator, TranslationConfig, clean_translation_output
 
 
 class TranslationRuntime:
@@ -118,7 +118,7 @@ class TranslationRuntime:
         if trace:
             trace.translation_started_at = t0
         result = await self.client.translate_result(text, detected_language)
-        translated = "" if result is None else result.translated
+        translated = clean_translation_output("" if result is None else result.translated)
         if trace:
             trace.translation_finished_at = time.time()
         if not translated or not translated.strip():
@@ -128,7 +128,7 @@ class TranslationRuntime:
         target_lang = getattr(result, "target_lang", "")
 
         elapsed = time.time() - t0
-        logger.info("[翻译] {} ({:.1f}s)", translated[:80], elapsed)
+        logger.info("translated: {} ({:.1f}s)", translated[:80], elapsed)
         self._event_bus.publish(
             TranslationReady(
                 original=text,

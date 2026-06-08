@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from voxgo.audio.capture import SpeechSegment
 
@@ -40,3 +40,8 @@ class LatencyTrace:
 class SpeechWorkItem:
     segment: SpeechSegment
     trace: LatencyTrace
+    candidate_labels: tuple = field(default_factory=tuple)
+    candidate_reason: str = ""
+    low_confidence: bool = False
+    short_segment: bool = False
+    dumped_low_confidence: bool = False

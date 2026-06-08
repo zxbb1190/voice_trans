@@ -271,7 +271,7 @@ class SettingsDialog(QDialog):
         self.chunk_duration_spin.setRange(60, 1000)
         self.chunk_duration_spin.setSingleStep(10)
         self.chunk_duration_spin.setSuffix(" ms")
-        self.chunk_duration_spin.setValue(int(getattr(self.audio_config, "chunk_duration_ms", 220) or 220))
+        self.chunk_duration_spin.setValue(int(getattr(self.audio_config, "chunk_duration_ms", 200) or 200))
         self.chunk_duration_spin.setToolTip("单个音频块长度；越小响应越快，CPU/切段压力越高")
         self.chunk_duration_spin.valueChanged.connect(self._preview)
         advanced_form.addRow(_tr(self._ui_language, "音频块", "Audio Chunk"), self.chunk_duration_spin)
@@ -287,7 +287,7 @@ class SettingsDialog(QDialog):
 
         self.silence_limit_blocks_spin = QSpinBox()
         self.silence_limit_blocks_spin.setRange(1, 50)
-        self.silence_limit_blocks_spin.setValue(int(getattr(self.audio_config, "silence_limit_blocks", 4) or 4))
+        self.silence_limit_blocks_spin.setValue(int(getattr(self.audio_config, "silence_limit_blocks", 3) or 3))
         self.silence_limit_blocks_spin.setToolTip("连续多少个静音块后切出一段")
         self.silence_limit_blocks_spin.valueChanged.connect(self._preview)
         advanced_form.addRow(_tr(self._ui_language, "静音块数", "Silence Blocks"), self.silence_limit_blocks_spin)
@@ -306,7 +306,7 @@ class SettingsDialog(QDialog):
         self.speech_idle_timeout_ms_spin.setSingleStep(50)
         self.speech_idle_timeout_ms_spin.setSuffix(" ms")
         self.speech_idle_timeout_ms_spin.setValue(
-            int(getattr(self.audio_config, "speech_idle_timeout_ms", 650) or 650)
+            int(getattr(self.audio_config, "speech_idle_timeout_ms", 550) or 550)
         )
         self.speech_idle_timeout_ms_spin.setToolTip("有语音缓冲但没有新音频块时，等待多久主动切段")
         self.speech_idle_timeout_ms_spin.valueChanged.connect(self._preview)
@@ -706,12 +706,12 @@ class SettingsDialog(QDialog):
 
     def _sync_audio_tuning_controls(self):
         controls = (
-            ("chunk_duration_ms", "chunk_duration_spin", int, 220),
+            ("chunk_duration_ms", "chunk_duration_spin", int, 200),
             ("speech_threshold_blocks", "speech_threshold_blocks_spin", int, 2),
-            ("silence_limit_blocks", "silence_limit_blocks_spin", int, 4),
+            ("silence_limit_blocks", "silence_limit_blocks_spin", int, 3),
             ("max_speech_seconds", "max_speech_seconds_spin", lambda value: int(round(float(value))), 6),
             ("pre_roll_ms", "pre_roll_ms_spin", int, 450),
-            ("speech_idle_timeout_ms", "speech_idle_timeout_ms_spin", int, 650),
+            ("speech_idle_timeout_ms", "speech_idle_timeout_ms_spin", int, 550),
         )
         for key, attr, coerce, default in controls:
             widget = getattr(self, attr, None)

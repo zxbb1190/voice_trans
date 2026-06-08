@@ -86,6 +86,49 @@ SHORT_ASR_FILLER_PATTERNS = {
 CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 LATIN_RE = re.compile(r"[a-zA-Z]")
 REPEAT_NORMALIZE_RE = re.compile(r"[\W_]+", re.UNICODE)
+REPEATED_NOISE_RUN_RE = re.compile(r"(.)\1{4,}", re.UNICODE)
+GLOBAL_ASR_NO_SPEECH_SHORT_THRESHOLD = 0.65
+GLOBAL_ASR_LOW_LOGPROB_SHORT_THRESHOLD = -1.10
+GLOBAL_ASR_NOISE_TOKEN_NO_SPEECH_THRESHOLD = 0.30
+GLOBAL_ASR_NOISE_TOKEN_LOGPROB_THRESHOLD = -0.80
+GLOBAL_ASR_SHORT_COMPACT_MAX_LEN = 12
+GLOBAL_ASR_ALLOWED_SHORT_TRANSCRIPTS = {
+    "gg",
+    "nt",
+    "wp",
+    "go",
+    "no",
+    "yes",
+    "run",
+    "push",
+    "mid",
+}
+GLOBAL_ASR_SUSPICIOUS_SHORT_TRANSCRIPTS = {
+    "you",
+    "yoy",
+    "thankyou",
+    "thanks",
+    "yeah",
+    "okay",
+    "ok",
+    "music",
+    "bam",
+    "shoo",
+    "shooo",
+    "uh",
+    "um",
+    "umm",
+    "hmm",
+    "hm",
+    "ah",
+    "oh",
+}
+GLOBAL_ASR_NOISE_TOKENS = {
+    "bam",
+    "yoy",
+    "shoo",
+    "shooo",
+}
 
 FASTER_WHISPER_MODEL_FILES = [
     "config.json",
@@ -127,6 +170,8 @@ class _TqdmOutputSink:
 @dataclass
 class WhisperConfig:
     model_size: str = "small"
+    fast_model_size: str = ""
+    active_model_size: str = ""
     device: str = "cpu"
     compute_type: str = "auto"
     cpu_threads: int = 2
@@ -158,6 +203,11 @@ class TranscriptionResult:
     text: str
     language: str = ""
     language_probability: float = 0.0
+    avg_logprob: float = 0.0
+    no_speech_prob: float = 0.0
+    compression_ratio: float = 0.0
+    segment_count: int = 0
+    duration_seconds: float = 0.0
 
 
 @dataclass
@@ -208,7 +258,7 @@ class SpeechRecognizer:
             for attempt in range(1, max_attempts + 1):
                 logger.info(
                     "加载 Whisper 模型: {} (device={}, compute_type={}, cpu_threads={}, num_workers={}, attempt={}/{})",
-                    self.config.model_size,
+                    self._effective_model_size(),
                     device,
                     compute_type,
                     runtime_options.get("cpu_threads", "-"),
@@ -218,7 +268,7 @@ class SpeechRecognizer:
                 )
                 try:
                     self._model = WhisperModel(
-                        self._model_path or self.config.model_size,
+                        self._model_path or self._effective_model_size(),
                         device=device,
                         compute_type=compute_type,
                         download_root=str(self._model_dir),
@@ -265,7 +315,7 @@ class SpeechRecognizer:
 
         repo_id = self._model_repo_id()
         if not repo_id:
-            logger.info("Whisper 模型不是可识别的 Hugging Face 仓库，跳过预下载进度: {}", self.config.model_size)
+            logger.info("Whisper 模型不是可识别的 Hugging Face 仓库，跳过预下载进度: {}", self._effective_model_size())
             return
 
         download_source = self._effective_download_source()
@@ -488,7 +538,7 @@ class SpeechRecognizer:
         )
 
     def _model_repo_id(self) -> Optional[str]:
-        model_size = (self.config.model_size or "").strip()
+        model_size = (self._effective_model_size() or "").strip()
         if not model_size:
             return None
 
@@ -520,7 +570,7 @@ class SpeechRecognizer:
 
     def _progress_tqdm_class(self, repo_id: str, source: str):
         callback = self._download_progress_callback
-        model_name = self.config.model_size
+        model_name = self._effective_model_size()
 
         try:
             from tqdm.auto import tqdm as base_tqdm
@@ -588,7 +638,7 @@ class SpeechRecognizer:
             return
         self._download_progress_callback(ModelDownloadProgress(
             status=status,
-            model_name=self.config.model_size,
+            model_name=self._effective_model_size(),
             repo_id=repo_id,
             source=source,
             downloaded_bytes=downloaded_bytes,
@@ -746,22 +796,46 @@ class SpeechRecognizer:
 
         # 合并所有片段
         text_parts = []
+        segment_count = 0
+        avg_logprob_values = []
+        no_speech_values = []
+        compression_values = []
         for segment in segments:
             text_parts.append(segment.text.strip())
+            segment_count += 1
+            avg_logprob_values.append(float(getattr(segment, "avg_logprob", 0.0) or 0.0))
+            no_speech_values.append(float(getattr(segment, "no_speech_prob", 0.0) or 0.0))
+            compression_values.append(float(getattr(segment, "compression_ratio", 0.0) or 0.0))
 
         full_text = " ".join(text_parts)
         elapsed = time.time() - start_time
 
         detected_language = getattr(info, "language", "") or ""
         language_probability = float(getattr(info, "language_probability", 0.0) or 0.0)
+        avg_logprob = sum(avg_logprob_values) / len(avg_logprob_values) if avg_logprob_values else 0.0
+        no_speech_prob = max(no_speech_values) if no_speech_values else 0.0
+        compression_ratio = max(compression_values) if compression_values else 0.0
         logger.debug(
-            "转录完成: {} 字符, language={}, prob={:.2f}, 耗时: {:.2f}s",
+            "transcription complete: chars={}, language={}, prob={:.2f}, avg_logprob={:.2f}, no_speech={:.2f}, compression={:.2f}, segments={}, elapsed={:.2f}s",
             len(full_text),
             detected_language,
             language_probability,
-            elapsed
+            avg_logprob,
+            no_speech_prob,
+            compression_ratio,
+            segment_count,
+            elapsed,
         )
-        return TranscriptionResult(full_text, detected_language, language_probability)
+        return TranscriptionResult(
+            full_text,
+            detected_language,
+            language_probability,
+            avg_logprob=avg_logprob,
+            no_speech_prob=no_speech_prob,
+            compression_ratio=compression_ratio,
+            segment_count=segment_count,
+            duration_seconds=len(audio_array) / 16000.0 if len(audio_array) else 0.0,
+        )
 
     def transcribe_audio_file(self, audio_file: str) -> str:
         """转录音频文件"""
@@ -807,12 +881,20 @@ class SpeechRecognizer:
         if not self._initialized:
             return {"status": "not_initialized"}
         return {
-            "model_size": self.config.model_size,
+            "model_size": self._effective_model_size(),
+            "configured_model_size": self.config.model_size,
+            "fast_model_size": getattr(self.config, "fast_model_size", ""),
             "device": self.config.device,
             "compute_type": self.config.compute_type,
             "language": self.config.language,
             "prompt_profile": self.config.prompt_profile,
         }
+
+    def _effective_model_size(self) -> str:
+        active = str(getattr(self.config, "active_model_size", "") or "").strip()
+        if active:
+            return active
+        return str(getattr(self.config, "model_size", "small") or "small").strip() or "small"
 
     def cleanup(self):
         """清理资源"""
@@ -992,6 +1074,41 @@ def normalize_transcript_for_repeat(text: str) -> str:
     return REPEAT_NORMALIZE_RE.sub("", normalized)
 
 
+def _is_repeated_noise_transcript(text: str) -> bool:
+    compact = normalize_transcript_for_repeat(text)
+    if len(compact) < 6:
+        return False
+    if REPEATED_NOISE_RUN_RE.search(compact):
+        return True
+    return len(set(compact)) <= 2 and len(compact) >= 8
+
+
+def _is_global_short_or_suspicious_transcript(text: str) -> bool:
+    stripped = (text or "").strip()
+    compact = normalize_transcript_for_repeat(stripped)
+    if not compact:
+        return True
+
+    lowered = compact.casefold()
+    if lowered in GLOBAL_ASR_ALLOWED_SHORT_TRANSCRIPTS:
+        return False
+    if lowered in GLOBAL_ASR_SUSPICIOUS_SHORT_TRANSCRIPTS:
+        return True
+    if len(compact) <= GLOBAL_ASR_SHORT_COMPACT_MAX_LEN:
+        return True
+
+    words = [part for part in re.split(r"\s+", stripped) if part]
+    return len(words) <= 2 and len(compact) <= GLOBAL_ASR_SHORT_COMPACT_MAX_LEN + 4
+
+
+def _is_suspicious_noise_token(text: str) -> bool:
+    compact = normalize_transcript_for_repeat(text)
+    if not compact:
+        return True
+    lowered = compact.casefold()
+    return lowered in GLOBAL_ASR_NOISE_TOKENS or lowered in SHORT_ASR_FILLER_PATTERNS
+
+
 def _normalize_filter_language(value: str) -> str:
     value = (value or "").strip().lower()
     aliases = {
@@ -1056,6 +1173,22 @@ def should_drop_transcription_result(
     text = (getattr(result, "text", "") or "").strip()
     if not text:
         return "识别文本为空"
+    no_speech_prob = float(getattr(result, "no_speech_prob", 0.0) or 0.0)
+    avg_logprob = float(getattr(result, "avg_logprob", 0.0) or 0.0)
+    if _is_repeated_noise_transcript(text):
+        return "global_asr_repeated_noise"
+    if _is_suspicious_noise_token(text) and (
+        no_speech_prob >= GLOBAL_ASR_NOISE_TOKEN_NO_SPEECH_THRESHOLD
+        or avg_logprob <= GLOBAL_ASR_NOISE_TOKEN_LOGPROB_THRESHOLD
+    ):
+        return (
+            "global_asr_noise_token "
+            f"no_speech={no_speech_prob:.2f} avg_logprob={avg_logprob:.2f}"
+        )
+    if no_speech_prob >= GLOBAL_ASR_NO_SPEECH_SHORT_THRESHOLD and _is_global_short_or_suspicious_transcript(text):
+        return f"global_asr_no_speech_short no_speech={no_speech_prob:.2f}"
+    if avg_logprob <= GLOBAL_ASR_LOW_LOGPROB_SHORT_THRESHOLD and _is_global_short_or_suspicious_transcript(text):
+        return f"global_asr_low_logprob_short avg_logprob={avg_logprob:.2f}"
     if is_likely_asr_hallucination(text):
         return "疑似 ASR 幻觉文本"
     if _is_short_anomalous_transcript(text):
