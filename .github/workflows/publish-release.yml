@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version, for example 0.2.3"
+        description: "Release version, for example 0.2.4"
         required: true
-        default: "0.2.3"
+        default: "0.2.4"
 
 permissions:
   contents: write
@@ -51,7 +51,7 @@ jobs:
       - name: Validate Python sources
         shell: powershell
         run: |
-          .\.venv-win\Scripts\python.exe -m py_compile app_info.py main.py overlay.py update_checker.py translator.py audio_capture.py speech_recognition.py mobile_server.py qr_widget.py i18n.py
+          .\.venv-win\Scripts\python.exe -m compileall voxgo tests main.py
           .\.venv-win\Scripts\python.exe -m unittest discover -s tests -v
 
       - name: Build lite and full portable packages
@@ -71,10 +71,10 @@ jobs:
           @"
           ## VoxGo $env:APP_VERSION
 
-          - Added the English website at `/en/` with English product, download, FAQ, privacy, safety, and GitHub information.
-          - Added a `Language` option in settings for Simplified Chinese and English UI.
-          - Added English text for key app surfaces, including overlay controls, settings, guide/about/update dialogs, feedback templates, and tray actions.
-          - Fixed the UI-language settings flow so the selected interface language is saved and refreshed across the main overlay.
+          - Refactored speech candidate handling to preserve low-volume and short voice recall.
+          - Added short-segment pending/merge, busy-queue protection, and debug audio diagnostics.
+          - Improved game-noise ASR hallucination filtering and translation tag cleanup.
+          - Updated portable build packaging retry handling for transient Windows file locks.
 
           ### Downloads
 
