@@ -5,7 +5,7 @@ Manually check both English->Chinese and Chinese->English translation.
 import asyncio
 
 from _helpers import load_translation_config, require_real_api_key
-from translator import GameTranslator
+from voxgo.translation import GameTranslator
 
 
 SAMPLES = [

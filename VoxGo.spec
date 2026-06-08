@@ -21,6 +21,7 @@ safe_config.write_text(
 datas = [
     (str(safe_config), "."),
     (str(root / "assets" / "voxgo.ico"), "assets"),
+    (str(root / "voxgo" / "mobile" / "static"), "voxgo/mobile/static"),
     (str(root / ".venv-win" / "Lib" / "site-packages" / "faster_whisper" / "assets"), "faster_whisper/assets"),
 ]
 
@@ -110,12 +111,12 @@ excludes = [
 ]
 
 a = Analysis(
-    ["main.py"],
+    ["voxgo/app.py"],
     pathex=[str(root)],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[],
+    hookspath=[str(root / "hooks")],
     hooksconfig={},
     runtime_hooks=[],
     excludes=excludes,

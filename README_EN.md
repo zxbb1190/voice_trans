@@ -24,12 +24,17 @@ GitHub: <https://github.com/zxbb1190/VoxGo_game_voice_trans>
 ## Project Layout
 ```text
 VoxGo_game_voice_trans/
-├── main.py               # Main application
-├── audio_capture.py      # Windows system-audio capture
-├── speech_recognition.py # faster-whisper speech recognition
-├── translator.py         # OpenAI-compatible / Google Cloud Translation client
-├── overlay.py            # PyQt5 overlay window
-├── mobile_server.py      # Mobile WebSocket server
+├── main.py               # Launcher
+├── voxgo/                # Application package
+│   ├── app.py            # VoxGoApp lifecycle coordinator
+│   ├── config/           # Config schema, loading, migration, and presets
+│   ├── audio/            # Audio capture, devices, and segmentation
+│   ├── asr/              # Whisper recognition and model download
+│   ├── translation/      # Translation providers and prompts
+│   ├── runtime/          # Runtime events and work items
+│   ├── ui/               # Overlay, settings, tray, QR, and dialogs
+│   ├── mobile/           # Mobile server and static assets
+│   └── update/           # Update checker
 ├── tests/                # Lightweight automated tests
 ├── diagnostics/          # Manual troubleshooting scripts
 ├── config.example.json   # Configuration template
@@ -211,7 +216,7 @@ Edit `config.json` or use the overlay settings:
 | `audio.silence_threshold` | Static fallback speech threshold in dBFS; default -40, avoid values above -20 for real voice chat |
 | `audio.speech_threshold_blocks` | Consecutive speech blocks required before speech starts in custom mode, balanced default 2 |
 | `audio.silence_limit_blocks` | Consecutive silent blocks required before segment flush in custom mode, balanced default 4 |
-| `audio.speech_idle_timeout_ms` | Active segment flush when speech is buffered but no new audio frames arrive, balanced default 650ms |
+| `audio.speech_idle_timeout_ms` | Active segment flush when speech is buffered but no new audio frames arrive, balanced default 550ms |
 | `audio.pre_roll_ms` | Audio kept before speech triggers, balanced default 450ms |
 | `audio.soft_silence_margin_db` | Treat the tail as silence after it drops this many dB below the segment peak, default 10 |
 | `audio.soft_silence_gate_margin_db` | Treat audio close to the speech gate as tail silence, default 5 |
@@ -237,7 +242,7 @@ Edit `config.json` or use the overlay settings:
 ### Cannot Capture Audio
 - Choose `[System Audio]` / `Loopback`, not a normal microphone.
 - First click "Test Audio" in the wizard or gear settings, play game/Discord/video sound, and check whether the level bar moves.
-- Run `python list_devices.py` and confirm that system-audio devices are visible.
+- Run `python diagnostics/list_devices.py` and confirm that system-audio devices are visible.
 - Make sure the game sound is playing through the same speaker/headphone device you selected.
 - If you use Bluetooth, HDMI, or a USB sound card, choose the matching system-audio/loopback item.
 - Re-run `install.bat` or install `PyAudioWPatch==0.2.12.8`.

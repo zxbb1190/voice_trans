@@ -7,15 +7,15 @@
     "latency_mode": "balanced",
     "sample_rate": 44100,
     "channels": 1,
-    "chunk_duration_ms": 220,
+    "chunk_duration_ms": 200,
     "vad_aggressiveness": 2,
     "silence_threshold": -40,
     "speech_threshold_blocks": 2,
-    "silence_limit_blocks": 4,
+    "silence_limit_blocks": 3,
     "max_buffer_blocks": 120,
     "max_speech_seconds": 6,
     "pre_roll_ms": 450,
-    "speech_idle_timeout_ms": 650,
+    "speech_idle_timeout_ms": 550,
     "soft_silence_margin_db": 10,
     "soft_silence_gate_margin_db": 5,
     "noise_calibration_seconds": 2,
@@ -27,6 +27,7 @@
   },
   "whisper": {
     "model_size": "small",
+    "fast_model_size": "",
     "device": "cpu",
     "compute_type": "auto",
     "cpu_threads": 2,
@@ -97,6 +98,11 @@
     "enabled": false,
     "log_level": "INFO",
     "save_audio_chunks": false,
-    "save_transcripts": false
+    "save_transcripts": false,
+    "save_failed_audio": false,
+    "save_dropped_audio": false,
+    "save_empty_asr_audio": false,
+    "save_low_confidence_audio": false,
+    "diagnostics_audio_dir": "diagnostics/audio"
   }
 }
