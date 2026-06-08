@@ -24,19 +24,17 @@ GitHub: <https://github.com/zxbb1190/VoxGo_game_voice_trans>
 ## Project Layout
 ```text
 VoxGo_game_voice_trans/
-├── main.py               # Backward-compatible launcher
+├── main.py               # Launcher
 ├── voxgo/                # Application package
 │   ├── app.py            # VoxGoApp lifecycle coordinator
 │   ├── config/           # Config schema, loading, migration, and presets
-│   ├── audio/            # Audio capture, devices, and segmenter entry points
-│   ├── asr/              # Whisper recognition and model-download entry points
+│   ├── audio/            # Audio capture, devices, and segmentation
+│   ├── asr/              # Whisper recognition and model download
 │   ├── translation/      # Translation providers and prompts
 │   ├── runtime/          # Runtime events and work items
-│   ├── ui/               # Overlay, settings, tray, and QR entry points
+│   ├── ui/               # Overlay, settings, tray, QR, and dialogs
 │   ├── mobile/           # Mobile server and static assets
-│   └── update/           # Update-checker entry point
-├── translator.py         # Backward-compatible translation entry point
-├── mobile_server.py      # Backward-compatible mobile server entry point
+│   └── update/           # Update checker
 ├── tests/                # Lightweight automated tests
 ├── diagnostics/          # Manual troubleshooting scripts
 ├── config.example.json   # Configuration template

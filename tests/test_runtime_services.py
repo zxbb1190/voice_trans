@@ -7,8 +7,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from audio_capture import AudioConfig, SpeechSegment
-from speech_recognition import TranscriptionResult, WhisperConfig
+from voxgo.audio.capture import AudioConfig, SpeechSegment
+from voxgo.asr.whisper_engine import TranscriptionResult, WhisperConfig
 from voxgo.asr.pipeline import SpeechPipeline
 from voxgo.config.schema import AppConfig
 from voxgo.runtime.events import EventBus, TranscriptReady, TranslationReady

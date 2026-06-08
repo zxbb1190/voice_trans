@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from speech_recognition import SpeechRecognizer, WhisperConfig
+from voxgo.asr.whisper_engine import SpeechRecognizer, WhisperConfig
 
 
 class ResamplingTest(unittest.TestCase):

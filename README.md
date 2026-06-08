@@ -25,19 +25,17 @@ GitHub：<https://github.com/zxbb1190/VoxGo_game_voice_trans>
 ## 📁 项目结构
 ```text
 VoxGo_game_voice_trans/
-├── main.py              # 兼容启动入口
+├── main.py              # 启动入口
 ├── voxgo/               # 应用主包
 │   ├── app.py           # VoxGoApp 生命周期协调
 │   ├── config/          # 配置结构、加载、迁移和预设
-│   ├── audio/           # 音频捕获、设备和分段兼容入口
-│   ├── asr/             # Whisper 识别和模型下载入口
+│   ├── audio/           # 音频捕获、设备和分段
+│   ├── asr/             # Whisper 识别和模型下载
 │   ├── translation/     # 翻译 Provider 和提示词
 │   ├── runtime/         # 运行时事件和工作项
-│   ├── ui/              # 浮窗、设置、托盘、二维码入口
+│   ├── ui/              # 浮窗、设置、托盘、二维码和对话框
 │   ├── mobile/          # 手机端服务和静态资源
-│   └── update/          # 更新检查入口
-├── translator.py        # 翻译兼容入口
-├── mobile_server.py     # 手机端服务兼容入口
+│   └── update/          # 更新检查
 ├── tests/               # 可自动运行的轻量测试
 ├── diagnostics/         # 手动排查脚本，不参与正常运行
 ├── config.example.json  # 配置模板

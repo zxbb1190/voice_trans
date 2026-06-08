@@ -8,8 +8,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from audio_capture import LATENCY_MODE_FAST
-from config.loader import (
+from voxgo.audio.capture import LATENCY_MODE_FAST
+from voxgo.config.loader import (
     default_app_config,
     load_config,
     save_user_settings,
@@ -17,7 +17,7 @@ from config.loader import (
     sync_language_flow,
     sync_whisper_vad_limit,
 )
-from speech_recognition import MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT
+from voxgo.asr.whisper_engine import MODEL_DOWNLOAD_SOURCE_CUSTOM_HF_ENDPOINT
 
 
 class ConfigLoaderTest(unittest.TestCase):

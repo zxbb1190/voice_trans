@@ -9,7 +9,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from fastapi.responses import FileResponse
 
-from mobile_server import MobileWebSocketManager, mobile_static_dir
+from voxgo.mobile.server import MobileWebSocketManager, mobile_static_dir
 
 
 class MobileServerAssetsTest(unittest.TestCase):

@@ -40,8 +40,8 @@ WhisperModel("tiny", device="cpu", compute_type="int8", download_root=".models")
 print("after", flush=True)
 """,
     "audio_capture_then_whisper": """
-from audio_capture import SystemAudioCapture, AudioConfig
-from speech_recognition import SpeechRecognizer, WhisperConfig
+from voxgo.audio.capture import SystemAudioCapture, AudioConfig
+from voxgo.asr.whisper_engine import SpeechRecognizer, WhisperConfig
 print("before", flush=True)
 capture = SystemAudioCapture(AudioConfig(sample_rate=44100, chunk_duration_ms=300))
 recognizer = SpeechRecognizer(WhisperConfig(model_size="tiny", device="cpu", compute_type="int8"))
@@ -51,7 +51,7 @@ print("after", flush=True)
 """,
     "project_imports_then_whisper": """
 import main
-from speech_recognition import SpeechRecognizer, WhisperConfig
+from voxgo.asr.whisper_engine import SpeechRecognizer, WhisperConfig
 print("before", flush=True)
 recognizer = SpeechRecognizer(WhisperConfig(model_size="tiny", device="cpu", compute_type="int8"))
 recognizer.initialize()

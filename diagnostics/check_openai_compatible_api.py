@@ -12,7 +12,7 @@ from _helpers import (
     load_translation_config,
     normalized_chat_endpoint,
 )
-from translator import GameTranslator
+from voxgo.translation import GameTranslator
 
 
 def main() -> None:

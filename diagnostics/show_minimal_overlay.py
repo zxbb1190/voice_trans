@@ -7,7 +7,7 @@ import sys
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QLabel, QWidget
 
-from app_info import APP_NAME
+from voxgo.app_info import APP_NAME
 
 
 class SimpleOverlay(QWidget):

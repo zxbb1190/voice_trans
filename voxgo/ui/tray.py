@@ -1,3 +1,3 @@
-from voxgo.ui.overlay import FullscreenHelpDialog
+from voxgo.ui.dialogs import FullscreenHelpDialog
 
 __all__ = ["FullscreenHelpDialog"]

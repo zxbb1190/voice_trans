@@ -12,8 +12,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app_info import APP_NAME
-from overlay import GameOverlay, OverlayConfig
+from voxgo.app_info import APP_NAME
+from voxgo.ui.config_models import OverlayConfig
+from voxgo.ui.overlay_window import GameOverlay
 
 def test_overlay():
     """测试浮窗"""

@@ -7,7 +7,7 @@ import threading
 import time
 
 from _helpers import load_translation_config, require_real_api_key
-from translator import GameTranslator
+from voxgo.translation import GameTranslator
 
 
 SAMPLES = [

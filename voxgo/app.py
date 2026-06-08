@@ -359,7 +359,7 @@ class VoxGoApp:
         from PyQt5.QtWidgets import QApplication, QMenu, QSystemTrayIcon
         from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot, Qt, QTimer
         from PyQt5.QtGui import QIcon
-        from voxgo.ui.overlay import GameOverlay
+        from voxgo.ui.overlay_window import GameOverlay
 
         class StartupSignals(QObject):
             backend_ready = pyqtSignal()

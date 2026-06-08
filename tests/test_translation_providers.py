@@ -7,7 +7,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import main
-import translator
+import voxgo.translation as translator
 from voxgo.app import VoxGoApp
 from voxgo.translation import GameTranslator, TranslationConfig
 from voxgo.translation.google import GoogleCloudProvider
