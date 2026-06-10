@@ -273,6 +273,11 @@ class AudioDeviceConfig:
 @dataclass
 class WhisperDeviceConfig:
     device: str = "cpu"
+    model_size: str = "small"
+    fast_model_size: str = ""
+    enable_english_model: bool = True
+    english_model_size: str = "small.en"
+    fast_english_model_size: str = ""
     model_download_source: str = "modelscope"
     model_download_endpoint: str = ""
 
@@ -319,6 +324,32 @@ def _copy_translation_config(config: TranslationConfig) -> TranslationConfig:
             "max_concurrent_requests",
             TranslationConfig.max_concurrent_requests,
         ),
+        skip_language_mismatch=getattr(
+            config,
+            "skip_language_mismatch",
+            TranslationConfig.skip_language_mismatch,
+        ),
+        language_gate_min_probability=getattr(
+            config,
+            "language_gate_min_probability",
+            TranslationConfig.language_gate_min_probability,
+        ),
+        language_gate_short_text_min_probability=getattr(
+            config,
+            "language_gate_short_text_min_probability",
+            TranslationConfig.language_gate_short_text_min_probability,
+        ),
+        language_gate_short_text_chars=getattr(
+            config,
+            "language_gate_short_text_chars",
+            TranslationConfig.language_gate_short_text_chars,
+        ),
+        enable_local_phrase_cache=getattr(
+            config,
+            "enable_local_phrase_cache",
+            TranslationConfig.enable_local_phrase_cache,
+        ),
+        local_phrase_cache=getattr(config, "local_phrase_cache", TranslationConfig.local_phrase_cache),
     )
 
 

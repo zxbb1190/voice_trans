@@ -73,6 +73,19 @@ AUDIO_LATENCY_PRESETS = {
     },
 }
 
+ENGLISH_AUDIO_LATENCY_BIAS = {
+    LATENCY_MODE_FAST: {
+        "speech_idle_timeout_ms": 300,
+        "max_speech_seconds": 2.8,
+        "pre_roll_ms": 250,
+    },
+    LATENCY_MODE_BALANCED: {
+        "speech_idle_timeout_ms": 450,
+        "max_speech_seconds": 5.0,
+        "pre_roll_ms": 350,
+    },
+}
+
 
 def normalize_latency_mode(value: str) -> str:
     normalized = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
@@ -141,6 +154,18 @@ def apply_audio_latency_preset(config) -> str:
         if hasattr(config, key):
             setattr(config, key, value)
     return mode
+
+
+def apply_english_audio_latency_bias(config, latency_mode: str = "") -> bool:
+    """Use shorter English segmentation timing without changing speech capture gates."""
+    mode = normalize_latency_mode(latency_mode or getattr(config, "latency_mode", LATENCY_MODE_BALANCED))
+    bias = ENGLISH_AUDIO_LATENCY_BIAS.get(mode)
+    if not bias:
+        return False
+    for key, value in bias.items():
+        if hasattr(config, key):
+            setattr(config, key, value)
+    return True
 
 
 @dataclass
@@ -773,6 +798,24 @@ class SystemAudioCapture:
 
     def current_noise_gate(self):
         return self._noise_floor, self._energy_threshold, self._noise_calibrated
+
+    def clear_pending_audio(self) -> int:
+        cleared = 0
+        while True:
+            try:
+                self._audio_queue.get_nowait()
+                cleared += 1
+            except queue.Empty:
+                break
+        if self._speech_buffer:
+            cleared += len(self._speech_buffer)
+        if self._pre_roll_buffer:
+            cleared += len(self._pre_roll_buffer)
+        self._reset_speech_buffer()
+        self._clear_pre_roll()
+        self._last_audio_activity_at = None
+        logger.info("audio pending buffers cleared: blocks={}", cleared)
+        return cleared
 
     def process_audio(self) -> Optional[SpeechSegment]:
         """处理音频队列，检测语音片段"""

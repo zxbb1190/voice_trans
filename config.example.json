@@ -28,6 +28,9 @@
   "whisper": {
     "model_size": "small",
     "fast_model_size": "",
+    "enable_english_model": true,
+    "english_model_size": "small.en",
+    "fast_english_model_size": "base.en",
     "device": "cpu",
     "compute_type": "auto",
     "cpu_threads": 2,
@@ -60,7 +63,13 @@
     "target_lang": "zh",
     "context_messages": 0,
     "timeout_seconds": 12,
-    "max_concurrent_requests": 2
+    "max_concurrent_requests": 2,
+    "skip_language_mismatch": true,
+    "language_gate_min_probability": 0.6,
+    "language_gate_short_text_min_probability": 0.85,
+    "language_gate_short_text_chars": 6,
+    "enable_local_phrase_cache": true,
+    "local_phrase_cache": {}
   },
   "overlay": {
     "font_size": 16,

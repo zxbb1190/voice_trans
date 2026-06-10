@@ -171,6 +171,9 @@ class _TqdmOutputSink:
 class WhisperConfig:
     model_size: str = "small"
     fast_model_size: str = ""
+    enable_english_model: bool = True
+    english_model_size: str = "small.en"
+    fast_english_model_size: str = ""
     active_model_size: str = ""
     device: str = "cpu"
     compute_type: str = "auto"
@@ -237,6 +240,7 @@ class SpeechRecognizer:
         self._download_progress_callback = download_progress_callback
         self._model: Optional[WhisperModel] = None
         self._model_path: Optional[str] = None
+        self._loaded_model_size: str = ""
         self._initialized = False
         self._model_dir = Path(self.config.model_dir)
         if not self._model_dir.is_absolute():
@@ -245,8 +249,16 @@ class SpeechRecognizer:
 
     def initialize(self):
         """初始化 Whisper 模型"""
-        if self._initialized:
+        effective_model = self._effective_model_size()
+        if self._initialized and self._loaded_model_size == effective_model:
             return
+        if self._initialized:
+            logger.info(
+                "Whisper effective model changed: {} -> {}, reloading",
+                self._loaded_model_size or "unknown",
+                effective_model,
+            )
+            self.cleanup()
 
         self._model_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_model_downloaded()
@@ -277,6 +289,7 @@ class SpeechRecognizer:
                     )
                     self.config.device = device
                     self.config.compute_type = compute_type
+                    self._loaded_model_size = effective_model
                     self._initialized = True
                     logger.info("Whisper 模型加载完成")
                     return
@@ -297,6 +310,17 @@ class SpeechRecognizer:
                         e,
                     )
                     break
+
+        fallback_model = self._fallback_model_size(effective_model)
+        if fallback_model:
+            logger.warning(
+                "English-specialized Whisper model failed, falling back to {}: {}",
+                fallback_model,
+                last_error,
+            )
+            self.config.active_model_size = "" if fallback_model == self._configured_model_size() else fallback_model
+            self.cleanup()
+            return self.initialize()
 
         raise RuntimeError("Whisper 模型加载失败，没有可用的设备配置") from last_error
 
@@ -764,7 +788,12 @@ class SpeechRecognizer:
         """将音频字节转录为文字"""
         return self.transcribe_audio_bytes_with_language(audio_bytes, sample_rate).text
 
-    def transcribe_audio_bytes_with_language(self, audio_bytes: bytes, sample_rate: int = 44100) -> TranscriptionResult:
+    def transcribe_audio_bytes_with_language(
+        self,
+        audio_bytes: bytes,
+        sample_rate: int = 44100,
+        language_override: str = None,
+    ) -> TranscriptionResult:
         """将音频字节转录为文字，并返回 Whisper 检测到的语言。"""
         if not self._initialized:
             self.initialize()
@@ -778,7 +807,8 @@ class SpeechRecognizer:
 
         # 转录
         start_time = time.time()
-        language = None if self.config.language in (None, "", "auto") else self.config.language
+        configured_language = self.config.language if language_override is None else language_override
+        language = None if configured_language in (None, "", "auto") else configured_language
         initial_prompt = self._initial_prompt()
         segments, info = self._model.transcribe(
             audio_array,
@@ -884,6 +914,8 @@ class SpeechRecognizer:
             "model_size": self._effective_model_size(),
             "configured_model_size": self.config.model_size,
             "fast_model_size": getattr(self.config, "fast_model_size", ""),
+            "english_model_size": getattr(self.config, "english_model_size", ""),
+            "fast_english_model_size": getattr(self.config, "fast_english_model_size", ""),
             "device": self.config.device,
             "compute_type": self.config.compute_type,
             "language": self.config.language,
@@ -894,11 +926,27 @@ class SpeechRecognizer:
         active = str(getattr(self.config, "active_model_size", "") or "").strip()
         if active:
             return active
+        return self._configured_model_size()
+
+    def _configured_model_size(self) -> str:
         return str(getattr(self.config, "model_size", "small") or "small").strip() or "small"
+
+    def _fallback_model_size(self, failed_model: str) -> str:
+        failed = str(failed_model or "").strip()
+        configured = self._configured_model_size()
+        english_models = {
+            str(getattr(self.config, "english_model_size", "") or "").strip(),
+            str(getattr(self.config, "fast_english_model_size", "") or "").strip(),
+        }
+        if failed and failed in english_models and failed != configured:
+            return configured
+        return ""
 
     def cleanup(self):
         """清理资源"""
         self._model = None
+        self._model_path = None
+        self._loaded_model_size = ""
         self._initialized = False
 
 

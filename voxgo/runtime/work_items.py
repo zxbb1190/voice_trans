@@ -8,6 +8,10 @@ class LatencyTrace:
     item_id: str
     speech_detected_at: float
     queued_at: float
+    source_lang: str = ""
+    target_lang: str = ""
+    whisper_language: str = ""
+    language_revision: int = 0
     dequeued_at: float = 0.0
     transcription_started_at: float = 0.0
     transcription_finished_at: float = 0.0
@@ -45,3 +49,7 @@ class SpeechWorkItem:
     low_confidence: bool = False
     short_segment: bool = False
     dumped_low_confidence: bool = False
+    source_lang: str = ""
+    target_lang: str = ""
+    whisper_language: str = ""
+    language_revision: int = 0

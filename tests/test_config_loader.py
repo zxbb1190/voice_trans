@@ -11,6 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from voxgo.audio.capture import LATENCY_MODE_BALANCED, LATENCY_MODE_FAST
 from voxgo.config.loader import (
+    apply_language_runtime_policy,
     default_app_config,
     load_config,
     migrate_runtime_defaults,
@@ -88,6 +89,7 @@ class ConfigLoaderTest(unittest.TestCase):
         config = default_app_config()
         config.whisper.model_size = "small"
         config.whisper.fast_model_size = "base"
+        config.whisper.enable_english_model = False
         config.audio.latency_mode = LATENCY_MODE_FAST
         load_like_fast = copy.deepcopy(config)
 
@@ -102,6 +104,49 @@ class ConfigLoaderTest(unittest.TestCase):
 
         self.assertEqual(balanced.whisper.model_size, "small")
         self.assertEqual(balanced.whisper.active_model_size, "")
+
+    def test_english_to_chinese_uses_english_specialized_model(self):
+        config = default_app_config()
+        config.audio.latency_mode = LATENCY_MODE_BALANCED
+        config.translation.source_lang = "en"
+        config.translation.target_lang = "zh"
+
+        source, target = sync_language_flow(config)
+        migrate_runtime_defaults(config, preserve_existing_audio_tuning=False)
+        source, target = sync_language_flow(config)
+        apply_language_runtime_policy(config)
+
+        self.assertEqual((source, target), ("en", "zh"))
+        self.assertEqual(config.whisper.active_model_size, "small.en")
+        self.assertEqual(config.audio.speech_idle_timeout_ms, 450)
+
+    def test_fast_english_to_chinese_uses_fast_english_model(self):
+        config = default_app_config()
+        config.audio.latency_mode = LATENCY_MODE_FAST
+        config.translation.source_lang = "en"
+        config.translation.target_lang = "zh"
+        config.whisper.fast_english_model_size = "base.en"
+
+        migrate_runtime_defaults(config, preserve_existing_audio_tuning=False)
+        sync_language_flow(config)
+        apply_language_runtime_policy(config)
+
+        self.assertEqual(config.whisper.active_model_size, "base.en")
+        self.assertEqual(config.audio.max_speech_seconds, 2.8)
+
+    def test_chinese_to_english_keeps_multilingual_model(self):
+        config = default_app_config()
+        config.audio.latency_mode = LATENCY_MODE_FAST
+        config.translation.source_lang = "zh"
+        config.translation.target_lang = "en"
+        config.whisper.fast_model_size = "base"
+
+        migrate_runtime_defaults(config, preserve_existing_audio_tuning=False)
+        sync_language_flow(config)
+        apply_language_runtime_policy(config)
+
+        self.assertEqual(config.whisper.language, "zh")
+        self.assertEqual(config.whisper.active_model_size, "base")
 
     def test_language_flow_and_vad_limit_sync(self):
         config = default_app_config()
